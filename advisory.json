@@ -1,0 +1,78 @@
+{
+  "slug": "copyescape-check",
+  "id": "CVE-2026-17106",
+  "aliases": [
+    "GHSA-hfg8-hc9c-6c3h"
+  ],
+  "title": "Docker copy destination escape",
+  "category": "Docker",
+  "affected": {
+    "docker_engine_cli": {
+      "fixed_version": "29.7.0",
+      "source": "https://docs.docker.com/engine/release-notes/29/#2970"
+    },
+    "docker_desktop": {
+      "fixed_version": "4.86.0",
+      "source": "https://docs.docker.com/security/security-announcements/"
+    },
+    "go_archive": {
+      "publisher_affected_range": "<0.2.2",
+      "github_reviewed_affected_range": "<0.3.0",
+      "fixed_version": "0.3.0",
+      "uncertain_range": ">=0.2.2 <0.3.0",
+      "sources": [
+        "https://github.com/moby/go-archive/security/advisories/GHSA-hfg8-hc9c-6c3h",
+        "https://github.com/advisories/GHSA-hfg8-hc9c-6c3h"
+      ]
+    }
+  },
+  "fixed": {
+    "docker_engine_cli": {
+      "fixed_version": "29.7.0",
+      "source": "https://docs.docker.com/engine/release-notes/29/#2970"
+    },
+    "docker_desktop": {
+      "fixed_version": "4.86.0",
+      "source": "https://docs.docker.com/security/security-announcements/"
+    },
+    "go_archive": {
+      "publisher_affected_range": "<0.2.2",
+      "github_reviewed_affected_range": "<0.3.0",
+      "fixed_version": "0.3.0",
+      "uncertain_range": ">=0.2.2 <0.3.0",
+      "sources": [
+        "https://github.com/moby/go-archive/security/advisories/GHSA-hfg8-hc9c-6c3h",
+        "https://github.com/advisories/GHSA-hfg8-hc9c-6c3h"
+      ]
+    }
+  },
+  "preconditions": [
+    "untrusted container or archive",
+    "docker cp copyout or go archive extract",
+    "host filesystem write privileges"
+  ],
+  "notes": [
+    "Docker official Engine release notes place the fix in 29.7.0, whereas some community reports claim 29.7.2. Prefer 29.7.0 official release source; 29.7.2 repaired compatibility regressions.",
+    "Publisher go-archive GHSA affected range is <0.2.2 while GitHub Reviewed entry says <0.3.0; both name patched 0.3.0. Treat the gap as unknown rather than asserting safety.",
+    "Sandboxes 0.38.0 appears in community claims but was not independently verified against a primary release source; omit executable Sandboxes version rule until verified."
+  ],
+  "sources": [
+    "https://docs.docker.com/engine/release-notes/29/#2970",
+    "https://docs.docker.com/security/security-announcements/",
+    "https://github.com/moby/go-archive/security/advisories/GHSA-hfg8-hc9c-6c3h",
+    "https://github.com/advisories/GHSA-hfg8-hc9c-6c3h"
+  ],
+  "implementation_status": "planned",
+  "verification": "verified_with_range_conflict",
+  "status": "new",
+  "verified_at": "2026-10-23",
+  "repository_url": "https://github.com/CompleteTech-LLC/copyescape-check",
+  "schema_version": "1.0",
+  "record_type": "research_only",
+  "detection_enabled": false,
+  "implementation_complete": false,
+  "assessment_performed": false,
+  "exploitability": "not_tested",
+  "scope_policy": "One distinct exploit per repository; aliases and affected products share this scope.",
+  "research_notice": "Source research for a planned checker; not an executable rule or assessment result."
+}

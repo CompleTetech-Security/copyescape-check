@@ -1,0 +1,30 @@
+# Python development output, when implementation begins
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Local editor and operating-system output
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Private assessment inputs and generated reports
+# Keep sanitized fixtures in a separately reviewed fixtures/ directory.
+.env
+.env.*
+!.env.example
+private/
+local/
+inventories/
+reports/
+runtime.json
+websites.txt
+*.log
