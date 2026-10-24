@@ -4,6 +4,7 @@
 import ast
 import contextlib
 import csv
+import errno
 import io
 import json
 from pathlib import Path
@@ -120,6 +121,7 @@ class PublicationTests(unittest.TestCase):
                     else:
                         checker.save_report(target, rows, force=False, state=state, format="json", complete=True)
             self.assertFalse(state["published"])
+            self.assertFalse(state["publication_started"])
             self.assertEqual(b"competing synthetic report", target.read_bytes())
             self.assertEqual(["report.json"], sorted(p.name for p in Path(directory).iterdir()))
 
@@ -137,6 +139,138 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(130, code)
         self.assertFalse(json.loads(output)["complete"])
         self.assertEqual(1, len(json.loads(output)["results"]))
+
+
+    def test_metadata_errors_after_success_preserve_report_with_unknown_outcome(self):
+        for force in (False, True):
+            for failure in (OSError(errno.EIO, "synthetic metadata failure"), PermissionError(errno.EACCES, "synthetic metadata denial")):
+                with self.subTest(force=force, failure=type(failure).__name__), tempfile.TemporaryDirectory() as directory:
+                    target = Path(directory)/"report.json"
+                    if force:
+                        target.write_bytes(b"previous synthetic report")
+                    operation = "replace" if force else "link"
+                    original, original_stat = getattr(checker.os, operation), checker.os.stat
+                    calls, published = [], []
+                    def publish_then_interrupt(*args, **kwargs):
+                        calls.append(1)
+                        original(*args, **kwargs)
+                        published.append(target.read_bytes())
+                        raise KeyboardInterrupt
+                    def unavailable_metadata(path, *args, **kwargs):
+                        if published and isinstance(path, (str, bytes, Path)) and checker.os.fspath(path) == checker.os.fspath(target):
+                            raise failure
+                        return original_stat(path, *args, **kwargs)
+                    original_save, observed_states = checker.save_report, []
+                    def observe_state(*args, **kwargs):
+                        observed_states.append(kwargs["state"])
+                        return original_save(*args, **kwargs)
+                    with patch.object(checker.os, operation, publish_then_interrupt), patch.object(checker.os, "stat", unavailable_metadata), patch.object(checker, "save_report", observe_state):
+                        code, output, error = run(*BASE, "--format", "json", "--output", str(target), *(["--force"] if force else []))
+                    self.assertEqual(1, len(observed_states))
+                    self.assertFalse(observed_states[0]["published"])
+                    self.assertTrue(observed_states[0]["publication_started"])
+                    self.assertEqual(130, code)
+                    self.assertEqual("", output)
+                    self.assertEqual(1, len(calls))
+                    self.assertEqual(published[0], target.read_bytes())
+                    self.assertTrue(json.loads(target.read_text())["complete"])
+                    self.assertIn("could not be verified", error)
+                    self.assertEqual(["report.json"], sorted(p.name for p in Path(directory).iterdir()))
+
+
+    def test_metadata_failure_at_success_flag_keeps_the_pre_mutation_barrier(self):
+        tree = ast.parse(Path(checker.__file__).read_text())
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "save_report")
+        guarded = next(node for node in ast.walk(function) if isinstance(node, ast.Try)
+                       and any(isinstance(handler.type, ast.Name) and handler.type.id == "KeyboardInterrupt" for handler in node.handlers))
+        flag_line = guarded.body[-1].lineno
+        for force in (False, True):
+            for failure in (OSError(errno.EIO, "synthetic metadata failure"), PermissionError(errno.EACCES, "synthetic metadata denial")):
+                with self.subTest(force=force, failure=type(failure).__name__), tempfile.TemporaryDirectory() as directory:
+                    target = Path(directory)/"report.json"
+                    if force:
+                        target.write_bytes(b"previous synthetic report")
+                    operation = "replace" if force else "link"
+                    original, original_stat = getattr(checker.os, operation), checker.os.stat
+                    calls, published, states = [], [], []
+                    def counted_publication(*args, **kwargs):
+                        calls.append(1)
+                        return original(*args, **kwargs)
+                    def unavailable_metadata(path, *args, **kwargs):
+                        if published and isinstance(path, (str, bytes, Path)) and checker.os.fspath(path) == checker.os.fspath(target):
+                            raise failure
+                        return original_stat(path, *args, **kwargs)
+                    def trace(frame, event, argument):
+                        if frame.f_code is checker.save_report.__code__ and event == "line" and frame.f_lineno == flag_line:
+                            states.append(frame.f_locals["state"])
+                            published.append(target.read_bytes())
+                            sys.settrace(None)
+                            raise KeyboardInterrupt
+                        return trace
+                    try:
+                        with patch.object(checker.os, operation, counted_publication), patch.object(checker.os, "stat", unavailable_metadata):
+                            sys.settrace(trace)
+                            code, output, error = run(*BASE, "--format", "json", "--output", str(target), *(["--force"] if force else []))
+                    finally:
+                        sys.settrace(None)
+                    self.assertEqual(130, code)
+                    self.assertEqual(1, len(calls))
+                    self.assertEqual(published[0], target.read_bytes())
+                    self.assertTrue(json.loads(target.read_text())["complete"])
+                    self.assertFalse(states[0]["published"])
+                    self.assertTrue(states[0]["publication_started"])
+                    self.assertIn("could not be verified", error)
+
+    def test_second_interrupt_during_reconciliation_never_retries_publication(self):
+        for force in (False, True):
+            with self.subTest(force=force), tempfile.TemporaryDirectory() as directory:
+                target = Path(directory)/"report.json"
+                if force:
+                    target.write_bytes(b"previous synthetic report")
+                operation = "replace" if force else "link"
+                original, original_stat = getattr(checker.os, operation), checker.os.stat
+                calls, published, states = [], [], []
+                def publish_then_interrupt(*args, **kwargs):
+                    calls.append(1)
+                    original(*args, **kwargs)
+                    published.append(target.read_bytes())
+                    raise KeyboardInterrupt
+                def interrupt_reconciliation(path, *args, **kwargs):
+                    if published and isinstance(path, (str, bytes, Path)) and checker.os.fspath(path) == checker.os.fspath(target):
+                        raise KeyboardInterrupt
+                    return original_stat(path, *args, **kwargs)
+                original_save = checker.save_report
+                def observe_state(*args, **kwargs):
+                    states.append(kwargs["state"])
+                    return original_save(*args, **kwargs)
+                with patch.object(checker.os, operation, publish_then_interrupt), patch.object(checker.os, "stat", interrupt_reconciliation), patch.object(checker, "save_report", observe_state):
+                    code, output, error = run(*BASE, "--format", "json", "--output", str(target), *(["--force"] if force else []))
+                self.assertEqual(130, code)
+                self.assertEqual(1, len(calls))
+                self.assertEqual(published[0], target.read_bytes())
+                self.assertTrue(json.loads(target.read_text())["complete"])
+                self.assertFalse(states[0]["published"])
+                self.assertTrue(states[0]["publication_started"])
+                self.assertIn("could not be verified", error)
+
+    def test_definite_absence_before_publication_still_allows_recovery(self):
+        for force in (False, True):
+            with self.subTest(force=force), tempfile.TemporaryDirectory() as directory:
+                target = Path(directory)/"report.json"
+                operation = "replace" if force else "link"
+                original = getattr(checker.os, operation)
+                calls = []
+                def interrupt_before_publication(*args, **kwargs):
+                    calls.append(1)
+                    if len(calls) == 1:
+                        raise KeyboardInterrupt
+                    return original(*args, **kwargs)
+                with patch.object(checker.os, operation, interrupt_before_publication):
+                    code, output, error = run(*BASE, "--format", "json", "--output", str(target), *(["--force"] if force else []))
+                self.assertEqual(130, code)
+                self.assertEqual(2, len(calls))
+                self.assertFalse(json.loads(target.read_text())["complete"])
+                self.assertEqual(["report.json"], sorted(p.name for p in Path(directory).iterdir()))
 
 
 class CsvTests(unittest.TestCase):

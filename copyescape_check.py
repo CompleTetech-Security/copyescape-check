@@ -572,6 +572,7 @@ def save_report(path, rows, *, force=False, state=None, **options):
             os.fsync(stream.fileno())
             staged_identity = os.fstat(stream.fileno())
         try:
+            state["publication_started"] = True
             if force:
                 os.replace(temporary, path)
             else:
@@ -584,10 +585,16 @@ def save_report(path, rows, *, force=False, state=None, **options):
             state["published"] = True
         except KeyboardInterrupt:
             try:
-                if os.path.samestat(staged_identity, os.stat(path, follow_symlinks=False)):
-                    state["published"] = True
+                destination = os.stat(path, follow_symlinks=False)
+            except FileNotFoundError:
+                state["publication_started"] = False
             except OSError:
-                pass
+                pass  # Indeterminate: retain the pre-mutation retry barrier.
+            else:
+                if os.path.samestat(staged_identity, destination):
+                    state["published"] = True
+                else:
+                    state["publication_started"] = False
             raise
     finally:
         if temporary is not None:
@@ -660,7 +667,7 @@ def main(argv=None) -> int:
         print(f"{parser.prog}: error: {exc}", file=sys.stderr)
         return 2
     records = [asdict(row) for row in rows]
-    state = {"published": False, "stdout_started": False}
+    state = {"published": False, "stdout_started": False, "publication_started": False}
     for attempt in (1, 2):
         try:
             save_report(args.output, records, force=args.force, format=args.format, brand=args.brand, complete=complete, state=state)
@@ -668,6 +675,9 @@ def main(argv=None) -> int:
         except KeyboardInterrupt:
             if state["published"]:
                 print("Interrupted after the report was published; not retrying.", file=sys.stderr)
+                return 130
+            if state.get("publication_started"):
+                print("Interrupted; publication could not be verified and will not be retried.", file=sys.stderr)
                 return 130
             if state["stdout_started"]:
                 print("Interrupted while writing stdout; output may be truncated and no second report is written.", file=sys.stderr)
