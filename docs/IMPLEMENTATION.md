@@ -108,7 +108,7 @@ collection to the specific product and advisory.
 - [x] Protect CSV consumers from formula injection and keep private paths/data out of shared examples.
 - [x] Provide actual CLI help, input examples, exit-status semantics, and output-overwrite behavior.
 - [x] Distinguish findings (exit 1 with `--fail-on-finding`) from operational errors (exit 2).
-- [x] On interruption, completed results are written (JSON/HTML marked incomplete) and the exit status is 130; tested with an injected `KeyboardInterrupt`. Incremental checkpoints during a run are not implemented, and the write itself is atomic.
+- [x] Preserve completed observations and distinguish interruption from operational errors. `test_review_regressions.py` covers interrupted stdout, pre-publication recovery, post-publication syscall/flag-line interruption, staged-inode identity, CSV failures and zero-result summary metadata; see the reference for exact semantics.
 - [x] Add report branding controls (`--brand`); no logo option is provided.
 
 ## 5. Gate any optional network mode

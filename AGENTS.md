@@ -54,3 +54,5 @@ Run `python -m unittest -v` and `python copyescape_check.py --help`. Do not inve
 private assessments. Keep CLI, schemas, methodology, and README aligned. Distinguish
 local results from hosted CI on the exact published commit. Preserve unrelated
 work and follow the licensing and brand policies linked above.
+
+Report publication regressions live in `test_review_regressions.py`. Preserve the staged-inode interruption reconciliation, keep the success-flag assignment inside its guarded try, never append a second stdout report, and retain explicit zero-result CSV summary metadata.
