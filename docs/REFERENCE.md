@@ -63,14 +63,14 @@ python copyescape_check.py --version go-archive=0.3.0 --build-source vendor
 | `copy_or_extract_path_used` | Boolean or null | `docker cp` copy-out or `go-archive` extraction in use. |
 | `host_write_privileges` | Boolean or null | The extracting process can write to the host filesystem. |
 
-Unknown fields, duplicate JSON keys, non-finite numbers, wrong types, unsupported
+Strings (including CLI `--version` values and `--build-source`) are limited to 512 characters; component and version text must be ASCII, and look-alike Unicode is `unknown` or rejected. Unknown fields, duplicate JSON keys, non-finite numbers, wrong types, unsupported
 schema versions, oversized files, and unsupported components are operational errors.
 
 ### CSV list
 
 `--csv FILE` (repeatable) reads UTF-8 CSV with a header containing at least `component` and `version`,
 and optionally the other inventory columns except `schema_version`. Precondition
-columns accept `true`, `false`, or empty/`unknown`. Duplicate columns, unknown
+columns accept exactly `true` or `false` (case-insensitive), or empty, `unknown`, or `null` for not observed. Other spellings such as `yes` or `1` are errors. Duplicate columns, unknown
 columns, ragged rows, and invalid values are operational errors.
 
 ### Build provenance
@@ -89,7 +89,9 @@ status `vendor_build_unverified`, because backports cannot be detected from a ve
 | `untrusted_archive_or_container`, `copy_or_extract_path_used`, `host_write_privileges` | `reported`, `not_reported`, or `unknown`. Observations only. |
 | `precondition_summary` | `all_preconditions_reported`, `some_preconditions_not_reported`, or `preconditions_incomplete`. Never changes the status. |
 | `copyescape_exploitability` | Always `not_tested`. |
+| `schema_version` | Report schema version (`1.0`), present on every JSON and CSV row. |
 | `copyescape_fixed_version`, `copyescape_sources`, `copyescape_evidence_type`, `copyescape_rules_as_of`, `copyescape_cve`, `copyescape_aliases` | Rule provenance. |
+| `copyescape_evidence_confidence` | `primary_source` (Engine, Desktop) or `primary_source_range_conflict` (go-archive, where the two advisories disagree). |
 | `copyescape_notes`, `copyescape_recommendation` | Limitations and next step. |
 | `status` | Always `offline` (no network). |
 
@@ -100,8 +102,8 @@ conflicting, vendor/custom, disputed, and uncovered versions are all `unknown`.
 
 Select with `--format csv|json|html` (default `csv`) and `--output FILE` (default stdout).
 
-- **CSV**: one flat row per result; lists are joined with ` | `. Values that could be read as spreadsheet formulas (leading `=`, `+`, `-`, `@`, tab or carriage return, including after whitespace) are prefixed with an apostrophe.
-- **JSON**: an object with `tool`, `tool_version`, `schema_version` (`1.0`), `cve`, `aliases`, `rules_as_of`, `sources`, `generated_at`, and `results`.
+- **CSV**: one flat row per result with `\n` line endings; fields containing line breaks are quoted; lists are joined with ` | `. Rows carry `schema_version` and the rule date, sources, evidence type and confidence, but there is no run-completeness envelope. Values that could be read as spreadsheet formulas (leading `=`, `+`, `-`, `@`, tab or carriage return, including after whitespace) are prefixed with an apostrophe.
+- **JSON**: an object with `tool`, `tool_version`, `schema_version` (`1.0`), `cve`, `aliases`, `rules_as_of`, `sources`, `generated_at`, `complete`, and `results`.
 - **HTML**: a single self-contained, script-free page (restrictive Content-Security-Policy, no remote assets) with escaped values, summary counts, per-row evidence and limits, and the fix table. `--brand` sets the organization name. See [example-report.html](example-report.html), generated from synthetic data.
 
 An existing output file is refused unless `--force` is given. Output is written
@@ -130,7 +132,8 @@ The output directory must exist. Input files cannot be the output path, even wit
 | --- | --- |
 | 0 | Completed. No finding was requested, or none exists. |
 | 1 | `--fail-on-finding` was given and at least one result is `potentially_affected`. |
-| 2 | Operational error: bad usage or arguments, unreadable or invalid input, unsupported component, refused or unwritable output. Operational errors take precedence over findings. |
+| 130 | Interrupted (Ctrl+C) while loading inputs. Completed results are still written; JSON has `complete: false` and HTML shows an interrupted-run notice (CSV has no marker, so rely on the exit status). |
+| 2 | Operational error: bad usage or arguments, unreadable or invalid input, unsupported component, refused or unwritable output. Operational errors take precedence over findings. The output path is validated before any input is read. |
 
 Unknown results do not change the exit code; review them. Keep real inventories
 and reports outside version control.

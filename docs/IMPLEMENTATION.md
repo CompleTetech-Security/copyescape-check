@@ -108,7 +108,7 @@ collection to the specific product and advisory.
 - [x] Protect CSV consumers from formula injection and keep private paths/data out of shared examples.
 - [x] Provide actual CLI help, input examples, exit-status semantics, and output-overwrite behavior.
 - [x] Distinguish findings (exit 1 with `--fail-on-finding`) from operational errors (exit 2).
-- [ ] Incremental checkpoints for interrupted runs are not implemented; the offline run is short and the report is written atomically at the end.
+- [x] On interruption, completed results are written (JSON/HTML marked incomplete) and the exit status is 130; tested with an injected `KeyboardInterrupt`. Incremental checkpoints during a run are not implemented, and the write itself is atomic.
 - [x] Add report branding controls (`--brand`); no logo option is provided.
 
 ## 5. Gate any optional network mode

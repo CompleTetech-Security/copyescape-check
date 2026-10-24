@@ -293,5 +293,125 @@ class OutputTests(unittest.TestCase):
         self.assertNotRegex(source, r"(?m)^\s*(?:import|from)\s+(?:socket|urllib|http|ssl|requests|subprocess)\b")
 
 
+class HardeningTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def write(self, name, text):
+        path = self.dir / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_cli_arguments_enforce_the_field_limit(self):
+        self.assertEqual(2, run("--version", "go-archive=0." + "1" * 513)[0])
+        self.assertEqual(2, run("--version", "go-archive=0.1.0", "--build-source", "x" * 20000)[0])
+        self.assertEqual(2, run("--version", "x" * 600 + "=0.1.0")[0])
+        self.assertEqual(0, run("--version", "go-archive=0.1.0", "--build-source", "x" * 512)[0])
+
+    def test_non_ascii_lookalikes_and_odd_prefixes_never_become_fixed(self):
+        for version in ("vv0.3.0", "v 0.3.0", "0.3.0-", "0.3.0.", "0.３.0", "٠.٣.٠", "v０.3.0"):
+            with self.subTest(version=version):
+                self.assertEqual("unknown", assess_copyescape("go-archive", version)["copyescape_status"])
+        for source in ("ſ", "unknown\u212a", "ＵＮＫＮＯＷＮ"):
+            self.assertEqual("unknown", assess_copyescape("go-archive", "0.3.0", build_source=source)["copyescape_status"])
+        for name in ("go\u2011archive", "ｇｏ-archive", "go-archivé"):
+            with self.assertRaises(ValueError):
+                assess_copyescape(name, "0.3.0")
+
+    def test_csv_and_json_carry_provenance_fields(self):
+        _, out, _ = run("--version", "go-archive=0.2.5")
+        row = list(__import__("csv").DictReader(io.StringIO(out)))[0]
+        self.assertEqual(cc.SCHEMA_VERSION, row["schema_version"])
+        self.assertEqual(cc.RULES_DATE, row["copyescape_rules_as_of"])
+        self.assertEqual("primary_source_range_conflict", row["copyescape_evidence_confidence"])
+        self.assertTrue(row["copyescape_evidence_type"] and row["copyescape_sources"])
+        data = json.loads(run("--version", "docker-engine=29.7.0", "--format", "json")[1])
+        self.assertEqual("primary_source", data["results"][0]["copyescape_evidence_confidence"])
+        self.assertTrue(data["complete"])
+
+    def test_csv_output_neutralizes_embedded_line_breaks(self):
+        path = self.write("l.csv", 'component,version,label\ngo-archive,0.1.0,"a\rb\nc"\n')
+        _, out, _ = run("--csv", str(path))
+        self.assertNotIn("\r\n", out)
+        rows = list(__import__("csv").DictReader(io.StringIO(out, newline="")))
+        self.assertEqual(1, len(rows))
+        self.assertEqual("a\rb\nc", rows[0]["label"])
+
+    def test_strict_csv_and_json_failure_modes_exit_two_without_traceback(self):
+        cases = {
+            "q.csv": 'component,version\ngo-archive,"0.1.0\n',
+            "huge.csv": "component,version\ngo-archive," + "1" * 200000 + "\n",
+            "dup.csv": "component,version,version\ngo-archive,0.1.0,0.3.0\n",
+            "bom.json": '{"schema_version": ' + "9" * 6000 + ', "component": "go-archive", "version": "0.1.0"}',
+            "deep.json": "[" * 100000,
+            "bytes.json": "\ufffd",
+        }
+        for name, text in cases.items():
+            with self.subTest(name=name):
+                path = self.write(name, text)
+                flag = "--csv" if name.endswith(".csv") else "--inventory"
+                code, out, err = run(flag, str(path))
+                self.assertEqual(2, code)
+                self.assertNotIn("Traceback", err)
+        raw = self.dir / "latin.json"
+        raw.write_bytes(b"\xff\xfe\x00")
+        self.assertEqual(2, run("--inventory", str(raw))[0])
+        self.assertEqual(2, run("--csv", str(self.dir))[0])
+
+    def test_boolean_strings_are_exactly_the_documented_forms(self):
+        for text, ok in (("true", True), ("FALSE", True), ("", True), ("unknown", True), ("null", True),
+                         ("yes", False), ("1", False), ("0", False), ("no", False)):
+            with self.subTest(text=text):
+                path = self.write("b.csv", f"component,version,host_write_privileges\ngo-archive,0.1.0,{text}\n")
+                self.assertEqual(0 if ok else 2, run("--csv", str(path))[0])
+
+    def test_run_limit_is_enforced_while_loading(self):
+        lines = "component,version\n" + "go-archive,0.1.0\n" * (cc.MAX_INPUTS + 1)
+        path = self.write("many.csv", lines)
+        calls = []
+        original = cc.build_result
+        def counting(*a, **k):
+            calls.append(1)
+            return original(*a, **k)
+        cc.build_result = counting
+        self.addCleanup(setattr, cc, "build_result", original)
+        self.assertEqual(2, run("--csv", str(path))[0])
+        self.assertEqual(cc.MAX_INPUTS + 1, len(calls))
+
+    def test_output_is_validated_before_inputs_are_read(self):
+        target = self.dir / "exists.json"
+        target.write_text("keep", encoding="utf-8")
+        inv = self.write("inv.json", json.dumps({"schema_version": 1, "component": "go-archive", "version": "0.1.0"}))
+        called = []
+        original = cc.load_inventory
+        cc.load_inventory = lambda *a, **k: called.append(1)
+        self.addCleanup(setattr, cc, "load_inventory", original)
+        self.assertEqual(2, run("--inventory", str(inv), "--output", str(target))[0])
+        self.assertEqual([], called)
+
+    def test_interruption_writes_completed_results_and_exits_130(self):
+        original = cc.build_result
+        state = {"n": 0}
+        def flaky(*a, **k):
+            state["n"] += 1
+            if state["n"] == 2:
+                raise KeyboardInterrupt
+            return original(*a, **k)
+        cc.build_result = flaky
+        self.addCleanup(setattr, cc, "build_result", original)
+        target = self.dir / "partial.json"
+        code, _, err = run("--version", "go-archive=0.1.0", "--version", "go-archive=0.3.0", "--format", "json", "--output", str(target))
+        self.assertEqual(130, code)
+        data = json.loads(target.read_text(encoding="utf-8"))
+        self.assertFalse(data["complete"])
+        self.assertEqual(1, len(data["results"]))
+        state["n"] = 0
+        code, out, _ = run("--version", "go-archive=0.1.0", "--version", "go-archive=0.3.0", "--format", "html", "--fail-on-finding")
+        self.assertEqual(130, code)
+        self.assertIn("Interrupted run", out)
+
+
 if __name__ == "__main__":
     unittest.main()

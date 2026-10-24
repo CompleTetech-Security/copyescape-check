@@ -89,7 +89,7 @@ Deployment preconditions (untrusted container or archive, `docker cp` copy-out o
 ## How it works
 
 - Offline only: operator-supplied versions via `--version`, JSON inventory, or CSV list. Version-only advisories have **no network mode**, because passive metadata cannot answer the question.
-- Strict version parsing: only plain `x.y.z` (optional leading `v`) is compared; everything else stays `unknown`.
+- Strict ASCII version parsing: only plain `x.y.z` (optional leading `v`) is compared; everything else stays `unknown`.
 - Bounded inputs (1 MiB per file, 10,000 entries, 512-character fields) and no silent overwrite of output files.
 - JSON, CSV (spreadsheet-formula safe) and script-free HTML output.
 

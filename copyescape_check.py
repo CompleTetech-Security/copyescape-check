@@ -48,6 +48,7 @@ COMPONENTS = {
         "major": 29,
         "gap": None,
         "evidence": "vendor release notes",
+        "confidence": "primary_source",
         "sources": ("https://docs.docker.com/engine/release-notes/29/#2970",),
         "recommendation": (
             "Upgrade Docker Engine and CLI to 29.7.0 or later on the 29.x line, preferring the latest 29.7.x or newer "
@@ -65,6 +66,7 @@ COMPONENTS = {
         "major": 4,
         "gap": None,
         "evidence": "vendor security announcement",
+        "confidence": "primary_source",
         "sources": ("https://docs.docker.com/security/security-announcements/",),
         "recommendation": (
             "Upgrade Docker Desktop to 4.86.0 or later and confirm the installed build in the application."
@@ -80,6 +82,7 @@ COMPONENTS = {
         "major": 0,
         "gap": ((0, 2, 2), (0, 3, 0)),
         "evidence": "publisher advisory and GitHub-reviewed advisory",
+        "confidence": "primary_source_range_conflict",
         "sources": (
             "https://github.com/moby/go-archive/security/advisories/GHSA-hfg8-hc9c-6c3h",
             "https://github.com/advisories/GHSA-hfg8-hc9c-6c3h",
@@ -111,7 +114,9 @@ PARTIAL_RE = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*
 
 
 def normalize_component(value) -> str:
-    key = value.strip().lower().replace("_", "-") if isinstance(value, str) else ""
+    if not isinstance(value, str) or len(value) > MAX_FIELD or not value.isascii():
+        raise ValueError("component must be one of: " + ", ".join(COMPONENTS))
+    key = value.strip().lower().replace("_", "-")
     if key.startswith("docker-sandboxes") or key == "sandboxes":
         raise ValueError("No verified Docker Sandboxes rule exists for this CVE; it is intentionally unsupported")
     if key not in COMPONENT_ALIASES:
@@ -159,6 +164,7 @@ def assess_copyescape(component, version="", *, version_candidates=None, build_s
         "copyescape_rules_as_of": RULES_DATE,
         "copyescape_sources": list(rule["sources"]),
         "copyescape_evidence_type": rule["evidence"],
+        "copyescape_evidence_confidence": rule["confidence"],
         "copyescape_notes": [
             "Version metadata only. Runtime identity, vendor backports, input reachability and exploitability are not verified.",
             *rule["notes"],
@@ -184,6 +190,10 @@ def assess_copyescape(component, version="", *, version_candidates=None, build_s
         result["copyescape_version_status"] = "unrecognized_or_partial_version"
         notes.append("Non-text version metadata cannot be compared safely.")
         return result
+    if any(isinstance(value, str) and not value.isascii() for value in values):
+        result["copyescape_version_status"] = "unrecognized_or_partial_version"
+        notes.append("Non-ASCII version text cannot be compared safely.")
+        return result
     versions = sorted({value.strip().removeprefix("v") for value in values if value and value.strip()})
     if not versions:
         notes.append("No complete version was reported. Missing metadata does not establish that the component is absent or fixed.")
@@ -201,7 +211,7 @@ def assess_copyescape(component, version="", *, version_candidates=None, build_s
             f"Version {value[:128]!r} is not a plain stable x.y.z version. Prereleases, package suffixes, pseudo-versions and custom builds need vendor verification."
         )
         return result
-    source = build_source.strip().lower() if isinstance(build_source, str) else "invalid"
+    source = build_source.strip().lower() if isinstance(build_source, str) and build_source.isascii() else "invalid"
     if source not in TRUSTED_BUILD_SOURCES:
         result["copyescape_version_status"] = "vendor_build_unverified"
         notes.append("A vendor, distribution, custom or unrecognized build source was reported. Its upstream version does not verify the applied patch set.")
@@ -237,6 +247,7 @@ def assess_copyescape(component, version="", *, version_candidates=None, build_s
 
 @dataclass
 class Result:
+    schema_version: str = SCHEMA_VERSION
     label: str = ""
     source: str = "version"
     component: str = ""
@@ -257,6 +268,7 @@ class Result:
     copyescape_rules_as_of: str = RULES_DATE
     copyescape_sources: list = field(default_factory=list)
     copyescape_evidence_type: str = ""
+    copyescape_evidence_confidence: str = ""
     copyescape_notes: list = field(default_factory=list)
     copyescape_recommendation: str = ""
     status: str = "offline"
@@ -264,6 +276,10 @@ class Result:
 
 def build_result(label, source, component, version, build_source="unknown", platform="", architecture="", **observed) -> Result:
     name = normalize_component(component)
+    for key, item in (("label", label), ("version", version), ("build_source", build_source),
+                      ("platform", platform), ("architecture", architecture)):
+        if not isinstance(item, str) or len(item) > MAX_FIELD:
+            raise ValueError(f"{key} must be a string of at most {MAX_FIELD} characters")
     result = Result(label=label, source=source, component=name, reported_version=version, build_source=build_source,
                     platform=platform, architecture=architecture)
     for key, item in {**observe_preconditions(**observed), **assess_copyescape(name, version, build_source=build_source)}.items():
@@ -307,7 +323,7 @@ def _read_bounded(path: Path, what: str) -> bytes:
     return raw
 
 
-def load_inventory(path: Path) -> list[Result]:
+def load_inventory(path: Path, sink: list) -> list:
     def unique_object(pairs):
         value = {}
         for key, item in pairs:
@@ -324,49 +340,54 @@ def load_inventory(path: Path) -> list[Result]:
     records = data if isinstance(data, list) else [data]
     if not records or len(records) > MAX_INPUTS:
         raise ValueError(f"Inventory must contain between 1 and {MAX_INPUTS:,} entries")
-    return [inventory_result(record, f"{Path(path).stem}:{index + 1}") for index, record in enumerate(records)]
+    for index, record in enumerate(records):
+        sink.append(inventory_result(record, f"{Path(path).stem}:{index + 1}"))
+        if len(sink) > MAX_INPUTS:
+            raise ValueError(f"A run is limited to {MAX_INPUTS:,} inputs")
+    return sink
 
 
 def _csv_bool(value, column):
     text = (value or "").strip().lower()
     if text in {"", "unknown", "null"}:
         return None
-    if text in {"true", "yes", "1"}:
+    if text == "true":
         return True
-    if text in {"false", "no", "0"}:
+    if text == "false":
         return False
     raise ValueError(f"CSV column {column} must be true, false, or empty")
 
 
-def load_csv(path: Path) -> list[Result]:
+def load_csv(path: Path, sink: list) -> list:
     text = _read_bounded(path, "CSV list").decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(text, newline=""), strict=True)
     names = reader.fieldnames or []
     allowed = INVENTORY_FIELDS - {"schema_version"}
     if len(set(names)) != len(names) or set(names) - allowed or not {"component", "version"} <= set(names):
         raise ValueError("CSV header must contain component and version, and only documented columns")
-    results = []
+    count = 0
     for index, row in enumerate(reader):
         if None in row or None in row.values():
             raise ValueError(f"CSV row {index + 2} has a different number of fields than the header")
         if any(len(value) > MAX_FIELD for value in row.values()):
             raise ValueError(f"CSV row {index + 2} has a field over {MAX_FIELD} characters")
         observed = {key: _csv_bool(row.get(key), key) for key, _ in PRECONDITIONS}
-        results.append(build_result(row.get("label") or f"{Path(path).stem}:{index + 1}", "csv", row["component"],
+        sink.append(build_result(row.get("label") or f"{Path(path).stem}:{index + 1}", "csv", row["component"],
                                     row["version"], row.get("build_source") or "unknown", row.get("platform") or "",
                                     row.get("architecture") or "", **observed))
-        if len(results) > MAX_INPUTS:
-            raise ValueError(f"CSV list is limited to {MAX_INPUTS:,} entries")
-    if not results:
+        count += 1
+        if len(sink) > MAX_INPUTS:
+            raise ValueError(f"A run is limited to {MAX_INPUTS:,} inputs")
+    if not count:
         raise ValueError("CSV list contains no entries")
-    return results
+    return sink
 
 
 def parse_version_argument(text: str, build_source: str) -> Result:
     component, separator, version = text.partition("=")
     if not separator:
         raise ValueError("--version must look like COMPONENT=VERSION, e.g. go-archive=0.3.0")
-    if len(text) > 2 * MAX_FIELD:
+    if len(text) > 2 * MAX_FIELD + 1:
         raise ValueError("--version value is too long")
     name = normalize_component(component)
     return build_result(f"{COMPONENTS[name]['label']} {version}", "version", name, version, build_source)
@@ -416,7 +437,7 @@ STATUS_LABELS = {"potentially_affected": "Potentially affected", "unknown": "Unk
                  "fixed_version_reported": "Fixed version reported"}
 
 
-def render_html(rows, *, brand="CompleteTech LLC", generated_at=None) -> str:
+def render_html(rows, *, brand="CompleteTech LLC", generated_at=None, complete=True) -> str:
     def esc(value):
         return html.escape("" if value is None else str(value), quote=True)
 
@@ -447,6 +468,7 @@ def render_html(rows, *, brand="CompleteTech LLC", generated_at=None) -> str:
         for rule in COMPONENTS.values())
     tile_html = "".join(f"<div class='tile {cls}'><b>{value}</b><span>{esc(label)}</span></div>" for cls, value, label in tiles)
     sources = " · ".join(f"<a href='{esc(url)}'>{esc(url.split('//', 1)[1].split('/', 1)[0])}</a>" for url in TOOL_SOURCES)
+    incomplete = "" if complete else "<p class='callout'><b>Interrupted run.</b> Only completed inputs are shown. Re-run the unfinished inputs.</p>"
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
@@ -458,7 +480,7 @@ details{{max-width:430px}}summary{{cursor:pointer;color:var(--accent-text)}}deta
 <p class="sub">{CVE} · generated {esc(generated_at)} · rules as of {RULES_DATE}</p></div></header>
 <p class="callout"><b>Version evidence, not a proof of exploitability.</b> Every result has exploitability <code>not_tested</code>.
 Unknown results need investigation. Precondition observations are operator-reported and never change the version result.</p>
-<div class="tiles">{tile_html}</div>
+{incomplete}<div class="tiles">{tile_html}</div>
 <h2>Results</h2><div class="wrap"><table><thead><tr><th>Input</th><th>Version assessment</th><th>Reported</th>
 <th>Reported fix</th><th>Exploitability</th><th>Next step and evidence</th></tr></thead>
 <tbody>{''.join(body) or '<tr><td colspan="6">No results.</td></tr>'}</tbody></table></div>
@@ -471,20 +493,20 @@ A fixed version is a report from vendor sources, not a guarantee. Docker Sandbox
 """
 
 
-def write_report(output, rows, *, format="csv", brand="CompleteTech LLC"):
+def write_report(output, rows, *, format="csv", brand="CompleteTech LLC", complete=True):
     if format == "csv":
-        writer = csv.DictWriter(output, fieldnames=list(Result.__dataclass_fields__))
+        writer = csv.DictWriter(output, fieldnames=list(Result.__dataclass_fields__), lineterminator="\n")
         writer.writeheader()
         for row in rows:
             writer.writerow({key: csv_safe(value) for key, value in row.items()})
     elif format == "json":
         json.dump({"tool": "copyescape-check", "tool_version": TOOL_VERSION, "schema_version": SCHEMA_VERSION,
                    "cve": CVE, "aliases": list(ALIASES), "rules_as_of": RULES_DATE, "sources": list(TOOL_SOURCES),
-                   "generated_at": datetime.now(timezone.utc).isoformat(), "results": rows},
+                   "generated_at": datetime.now(timezone.utc).isoformat(), "complete": complete, "results": rows},
                   output, ensure_ascii=False, indent=2)
         output.write("\n")
     else:
-        output.write(render_html(rows, brand=brand))
+        output.write(render_html(rows, brand=brand, complete=complete))
 
 
 def save_report(path, rows, *, force=False, **options):
@@ -514,6 +536,7 @@ exit status:
   0  completed; no finding requested or none present
   1  --fail-on-finding was given and a potentially_affected result exists
   2  operational error (bad usage, unreadable or invalid input, output refused or unwritable)
+  130  interrupted; completed results were written (JSON/HTML mark the run incomplete)
 
 components: docker-engine, docker-desktop, go-archive. Docker Sandboxes has no verified rule.
 This tool is offline: it makes no network requests and runs no Docker or application code.
@@ -535,18 +558,11 @@ def main(argv=None) -> int:
     parser.add_argument("--tool-version", action="version", version=f"copyescape-check {TOOL_VERSION}")
     args = parser.parse_args(argv)
     rows = []
+    complete = True
     try:
-        for text in args.version:
-            rows.append(parse_version_argument(text, args.build_source))
-        for path in args.inventory:
-            rows.extend(load_inventory(path))
-        for path in args.csv_lists:
-            rows.extend(load_csv(path))
-        if not rows:
+        if not (args.version or args.inventory or args.csv_lists):
             parser.error("provide --version, --inventory, or --csv")
-        if len(rows) > MAX_INPUTS:
-            raise ValueError(f"A run is limited to {MAX_INPUTS:,} inputs")
-        if args.output:
+        if args.output:  # Validate the destination before reading any input.
             inputs = [*args.inventory, *args.csv_lists]
             if any(args.output.resolve() == p.resolve() for p in inputs):
                 raise ValueError("--output must differ from every input file, even with --force")
@@ -554,15 +570,27 @@ def main(argv=None) -> int:
                 raise ValueError("Output exists; use a new path or explicitly pass --force")
             if not args.output.parent.is_dir():
                 raise ValueError("Output directory must already exist")
+        try:
+            for text in args.version:
+                rows.append(parse_version_argument(text, args.build_source))
+            for path in args.inventory:
+                load_inventory(path, rows)
+            for path in args.csv_lists:
+                load_csv(path, rows)
+        except KeyboardInterrupt:
+            complete = False
+            print("Interrupted; preserving completed results.", file=sys.stderr)
     except (OSError, ValueError, UnicodeError, RecursionError, csv.Error) as exc:
         print(f"{parser.prog}: error: {exc}", file=sys.stderr)
         return 2
     records = [asdict(row) for row in rows]
     try:
-        save_report(args.output, records, force=args.force, format=args.format, brand=args.brand)
+        save_report(args.output, records, force=args.force, format=args.format, brand=args.brand, complete=complete)
     except (OSError, ValueError) as exc:
         print(f"Cannot write report: {exc}", file=sys.stderr)
         return 2
+    if not complete:
+        return 130
     if args.fail_on_finding and any(row["copyescape_status"] == "potentially_affected" for row in records):
         return 1
     return 0

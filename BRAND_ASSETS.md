@@ -8,7 +8,7 @@ may not be reused in a way that suggests endorsement, affiliation, sponsorship,
 or ownership without written permission.
 
 The images in `docs/images/` are the README banner, the social-preview image,
-and illustrative report layouts. The banner and social-preview image include the
+and example report renders. The banner and social-preview image include the
 CompleteTech LLC logo; this repository has no standalone logo file. The report
-images are placeholders using reserved `example.*` domains; they are not
-assessment output. Any future report branding must respect the rights of its owner.
+images are renders of the checker's HTML report built from synthetic, made-up
+inputs (`docs/example-inventory.json`); they are not assessment output. Any future report branding must respect the rights of its owner.
