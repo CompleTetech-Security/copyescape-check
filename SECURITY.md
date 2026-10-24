@@ -14,14 +14,14 @@ revision when possible. No response-time guarantee is made.
 
 ## Advisory scope and implementation status
 
-This project is dedicated to **CVE-2026-17106**. It currently provides research
-and an implementation plan. No scanner, exploit verification, or security
-assessment has been implemented. The advisory record is explicitly disabled.
+This project is dedicated to **CVE-2026-17106**. It provides an offline,
+version-only checker. It makes no network requests, runs no application code,
+and performs no exploit verification or security assessment of a system.
 
-Future output must distinguish reported versions and configuration hints from
-confirmed exposure. Exploitability remains `not_tested`. Use future assessment
-features only for authorized targets; project development alone authorizes no
-network scanning. Keep real inventories and assessment results outside the repo.
+Output distinguishes reported versions and operator-reported preconditions from
+confirmed exposure. Exploitability remains `not_tested`; a fixed version is a
+report, not a guarantee. Keep real inventories and assessment results outside
+the repo.
 
 For a vulnerability in the affected upstream product or a service you assess,
 follow that vendor's or service owner's published security-reporting process.

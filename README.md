@@ -3,32 +3,30 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-research%20only-B45309" alt="Status: research only">
-  <img src="https://img.shields.io/badge/checker-planned-64748B" alt="Checker: planned">
-  <img src="https://img.shields.io/badge/detection-disabled-B91C1C" alt="Detection: disabled">
+  <img src="https://img.shields.io/badge/checker-offline%20version%20triage-1E3A8A" alt="Checker: offline version triage">
+  <img src="https://img.shields.io/badge/python-3.10%2B-64748B" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/dependencies-none-64748B" alt="No dependencies">
   <a href="LICENSING.md"><img src="https://img.shields.io/badge/license-AGPL--3.0%20%7C%20commercial-64748B" alt="AGPL-3.0 or commercial license"></a>
 </p>
 
 <p align="center">
   <b>Docker copy destination escape</b><br>
-  CVE-2026-17106 · research foundation · checker planned
+  CVE-2026-17106 · offline version triage
 </p>
 
 ---
 
-> **Repository initialized; checker implementation pending.**
-> This project currently contains research and an implementation checklist.
-> It does not assess systems or provide an executable detection rule.
+`copyescape-check` is the dedicated repository for **CVE-2026-17106** (alias `GHSA-hfg8-hc9c-6c3h`), a flaw where a crafted archive can make `docker cp` copy-out (and other `moby/go-archive` extraction) write outside the intended destination. It is a standalone, standard-library-only Python 3.10+ tool that compares **operator-reported** versions of Docker Engine/CLI, Docker Desktop and `moby/go-archive` with the published fixes and reports uncertainty honestly. It makes no network requests, runs no Docker or application code, and never tests exploitability. By [CompleteTech LLC](https://complete.tech).
 
-`copyescape-check` is the dedicated repository for **CVE-2026-17106** (alias `GHSA-hfg8-hc9c-6c3h`). It is intended to become an evidence-based checker that compares reported Docker Engine/CLI, Docker Desktop, and `go-archive` versions with the published fixes and reports uncertainty honestly. Today it holds only source-backed research and a work plan, by [CompleteTech LLC](https://complete.tech).
+## Quick start
 
-## Status and what is planned
+```sh
+python copyescape_check.py --version docker-engine=29.6.2 --version go-archive=0.2.5 --format json
+python copyescape_check.py --inventory inventory.json --format html --output report.html
+python copyescape_check.py --csv components.csv --fail-on-finding
+```
 
-There are no checker commands, downloadable binaries, test results, or CI claims yet, so there is nothing to install or run. To follow or contribute to the work:
-
-1. Review [advisory.json](advisory.json) and the [primary sources](#primary-sources).
-2. Work through the exploit-specific [implementation checklist](docs/IMPLEMENTATION.md).
-3. Read [AGENTS.md](AGENTS.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [SECURITY.md](SECURITY.md) before contributing.
+There is no installation step. On systems where Python is called `python3`, substitute it. Inputs, fields, output formats, and exit codes are documented in the [reference](docs/REFERENCE.md); run `python copyescape_check.py --help` for usage. Tests: `python -m unittest -v`.
 
 ## One exploit, one repository
 
@@ -36,80 +34,78 @@ There are no checker commands, downloadable binaries, test results, or CI claims
 | --- | --- |
 | Exploit identifier | `CVE-2026-17106` |
 | Aliases for this same exploit | `GHSA-hfg8-hc9c-6c3h` |
-| Research verification date | 2026-10-23 |
-| Implementation state | `planned` |
-| Detection rule | **Disabled — research only** |
+| Rules reviewed against primary sources | 2026-10-24 |
+| Implementation state | Implemented (offline version triage) |
 
-Aliases and multiple affected products identify this same exploit; they do not create additional scanner scopes. Future fixes for different vulnerabilities belong in independent repositories.
+Aliases and multiple affected products identify this same exploit; they do not create additional scanner scopes. Fixes for different vulnerabilities belong in independent repositories.
 
-## Planned report layout
+## Example report
 
-A report is planned but **not implemented**. The image below is an illustrative layout only: it contains placeholder values on reserved `example.*` domains and shows no assessment results.
+The images show the HTML report rendered from the synthetic, reserved-name inputs in [docs/example-inventory.json](docs/example-inventory.json) (the output is [docs/example-report.html](docs/example-report.html)). They are an example of the checker's real output, not an assessment of any system.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/report-dark.png">
-    <img src="docs/images/report-light.png" alt="Illustrative placeholder layout of a planned report; no checker is implemented" width="900">
+    <img src="docs/images/report-light.png" alt="Synthetic example of the HTML report produced by the checker" width="900">
   </picture>
 </p>
 
-<p align="center"><sub>ILLUSTRATIVE ONLY. Not produced by a checker; every value is a placeholder.</sub></p>
+<p align="center"><sub>Synthetic example generated from made-up inputs; not a real assessment.</sub></p>
 
-## Planned result vocabulary
+## Result vocabulary
 
-Following the conventions of [node2shell-check](https://github.com/CompleteTech-LLC/node2shell-check) and [php2shell-check](https://github.com/CompleteTech-LLC/php2shell-check), the planned statuses are below. They are **planned, not implemented**.
+`version_status` (the `copyescape_status` field) is separate from precondition observations and from exploitability.
 
-| Planned status | Intended meaning |
+| Status | Meaning |
 | --- | --- |
-| `potentially_affected` | Evidence matches this advisory's documented range or condition. Not confirmed exploitability. |
-| `fixed_version_reported` | The reported version meets the reported fix. Not a verified clean bill of health. |
-| `unknown` | Missing, malformed, conflicting, prerelease, vendor-qualified, possible-backport, or uncovered versions. |
+| `potentially_affected` | The reported plain version is below the reported fix on the one release line the sources cover. Not confirmed exploitability. |
+| `fixed_version_reported` | The reported plain version meets the reported fix. Not a guarantee that the deployed build is patched. |
+| `unknown` | Missing, malformed, prerelease, qualified, vendor/custom-build, conflicting, disputed-range, or uncovered-line versions. |
 
-Exploitability would remain `not_tested` for every finding.
+`unsupported_runtime` is not used: the vendor sources reviewed do not publish lifecycle evidence for these components in this context. Exploitability is `not_tested` for every result.
 
-## Reported fixes (research only)
+## Reported fixes
 
-These values come from [advisory.json](advisory.json) and the sources below. They are research data, not an enabled rule.
+Reviewed 2026-10-24 against the primary sources below.
 
-| Component | Reported fixed version |
-| --- | --- |
-| Docker Engine / CLI | 29.7.0 |
-| Docker Desktop | 4.86.0 |
-| `go-archive` | 0.3.0 |
+| Component | Reported fixed version | Line assessed | Source |
+| --- | --- | --- | --- |
+| Docker Engine / CLI | 29.7.0 | 29.x | Docker Engine v29 release notes |
+| Docker Desktop | 4.86.0 | 4.x | Docker security announcements |
+| `moby/go-archive` | 0.3.0 | 0.x | Publisher and GitHub-reviewed advisories |
 
-For `go-archive`, the publisher advisory lists affected versions `<0.2.2` while the GitHub-reviewed entry lists `<0.3.0`; both name 0.3.0 as patched. The range `>=0.2.2 <0.3.0` is treated as **uncertain** rather than asserted safe.
+Boundary handling and limits:
 
-Other evidence notes preserved from the research record:
+- **Docker Engine / CLI**: the official release notes list the fix (`go-archive` v0.3.0) under 29.7.0 (2026-07-30). Some community reports claim 29.7.2; the official notes show 29.7.1 and 29.7.2 only repair regressions introduced in 29.7.0, so 29.7.0 is the threshold. The notes do not state the earliest affected Engine version, and no 28.x or older fix is listed, so other majors are `unknown`.
+- **Docker Desktop**: the security announcement lists the destination-escape flaw in `docker container cp` as fixed in 4.86.0. The earliest affected Desktop version is not stated, so other majors are `unknown`.
+- **`moby/go-archive`**: the publisher advisory lists affected `<0.2.2`; the GitHub-reviewed entry lists `<0.3.0`; both name 0.3.0 as patched. Versions `>=0.2.2 <0.3.0` are therefore `unknown`, never safe. (No `v0.2.2` tag was found in the repository, but the checker cannot rely on that.) A fixed Docker Engine does not update other software that embeds `go-archive`.
+- **Docker Sandboxes**: a "0.38.0" claim appears in community reports, but no primary source supports it (Docker's announcements mention Sandboxes only for other CVEs). No Sandboxes rule is provided; the checker rejects it explicitly.
 
-- Docker's official Engine release notes place the fix in 29.7.0, whereas some community reports claim 29.7.2. The official 29.7.0 source is preferred; 29.7.2 repaired compatibility regressions.
-- A Sandboxes 0.38.0 claim appears in community reports but was not independently verified against a primary release source, so no Sandboxes version rule is proposed.
-
-Deployment preconditions to establish separately: an untrusted container or archive, `docker cp` copy-out or `go-archive` extraction, and host filesystem write privileges.
+Deployment preconditions (untrusted container or archive, `docker cp` copy-out or `go-archive` extraction, host filesystem write privileges) can be supplied as operator observations. They are reported alongside the version result and never change it.
 
 > [!IMPORTANT]
-> **Nothing has been assessed.** No checker or detection rule exists, and the research record is deliberately disabled (`detection_enabled: false`). A reported fixed version would never be a guarantee, and a potentially affected result would never be confirmed exploitability. Version and deployment evidence require separate assessment.
+> A version comparison is evidence, not verified runtime state. A `potentially_affected` result is not confirmed exploitability, and `fixed_version_reported` is not a safety guarantee. Vendor backports and custom builds are not detectable from a version string.
 
-## How it is planned to work
+## How it works
 
-- Prefer offline version, inventory, or configuration evidence appropriate to this exploit.
-- Keep version state, documented preconditions, evidence provenance, and uncertainty separate.
-- Never run exploit payloads or confirm compromise.
-- Keep missing, malformed, conflicting, vendor-qualified, prerelease, and uncovered versions `unknown`.
-- Add bounded, explicitly selected passive network behavior only if it provides useful evidence.
-- Produce human-readable findings and machine-readable JSON/CSV, documenting each output before release.
+- Offline only: operator-supplied versions via `--version`, JSON inventory, or CSV list. Version-only advisories have **no network mode**, because passive metadata cannot answer the question.
+- Strict version parsing: only plain `x.y.z` (optional leading `v`) is compared; everything else stays `unknown`.
+- Bounded inputs (1 MiB per file, 10,000 entries, 512-character fields) and no silent overwrite of output files.
+- JSON, CSV (spreadsheet-formula safe) and script-free HTML output.
 
 ## Primary sources
 
-1. [docs.docker.com](https://docs.docker.com/engine/release-notes/29/#2970)
-2. [docs.docker.com](https://docs.docker.com/security/security-announcements/)
-3. [github.com](https://github.com/moby/go-archive/security/advisories/GHSA-hfg8-hc9c-6c3h)
-4. [github.com](https://github.com/advisories/GHSA-hfg8-hc9c-6c3h)
+1. [Docker Engine v29 release notes, 29.7.0](https://docs.docker.com/engine/release-notes/29/#2970)
+2. [Docker security announcements](https://docs.docker.com/security/security-announcements/)
+3. [moby/go-archive advisory GHSA-hfg8-hc9c-6c3h](https://github.com/moby/go-archive/security/advisories/GHSA-hfg8-hc9c-6c3h)
+4. [GitHub Advisory Database entry](https://github.com/advisories/GHSA-hfg8-hc9c-6c3h)
 
-The research date records the supplied verification snapshot. Recheck primary advisories before enabling any detection logic, and retain contradictory evidence.
+Rules are a dated offline snapshot (see `rules_as_of` in every report). Recheck the advisories before relying on an old copy of this tool.
 
 ## Documentation
 
-- [Implementation checklist](docs/IMPLEMENTATION.md): the outstanding work plan
+- [Reference](docs/REFERENCE.md): inputs, fields, outputs, exit codes
+- [Implementation checklist](docs/IMPLEMENTATION.md)
 - [advisory.json](advisory.json): source-preserving research record
 - [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [Agent instructions](AGENTS.md)
 

@@ -1,20 +1,21 @@
 # Implementation checklist
 
-**copyescape-check · CVE-2026-17106 · implementation pending**
+**copyescape-check · CVE-2026-17106 · implemented (offline version triage)**
 
-This is the local work plan for one exploit. Unchecked items are outstanding;
-repository initialization does not satisfy the implementation or release gates.
+This is the work plan and acceptance record for one exploit. Checked items are
+implemented and covered by `test_copyescape.py` or the documented review; unchecked
+items are outstanding or intentionally not applicable, with the reason given.
 Use [node2shell-check](https://github.com/CompleteTech-LLC/node2shell-check) and [php2shell-check](https://github.com/CompleteTech-LLC/php2shell-check) as format and quality references, while adapting evidence
 collection to the specific product and advisory.
 
 ## 1. Confirm this exploit's contract
 
-- [ ] Re-read the primary sources listed in [README.md](../README.md#primary-sources).
-- [ ] Confirm `CVE-2026-17106` and its aliases refer to the same vulnerability.
-- [ ] Preserve the exact affected ranges, supported branches, and fixed-build exceptions.
-- [ ] Resolve source discrepancies explicitly or keep the disputed cases `unknown`.
-- [ ] Record the source URL, retrieval/review date, evidence type, and relevant product for each rule.
-- [ ] Treat platform conditions and configuration mitigations separately from patch state.
+- [x] Re-read the primary sources listed in [README.md](../README.md#primary-sources).
+- [x] Confirm `CVE-2026-17106` and its aliases refer to the same vulnerability.
+- [x] Preserve the exact affected ranges, supported branches, and fixed-build exceptions.
+- [x] Resolve source discrepancies explicitly or keep the disputed cases `unknown`.
+- [x] Record the source URL, retrieval/review date, evidence type, and relevant product for each rule.
+- [x] Treat platform conditions and configuration mitigations separately from patch state.
 
 ### Affected evidence to encode
 
@@ -80,56 +81,61 @@ collection to the specific product and advisory.
 
 ## 2. Implement the minimum useful evidence collector
 
-- [ ] Define a small input schema for version/build provenance and this exploit's preconditions.
-- [ ] Prefer a standalone Python 3.10+ standard-library implementation when it fits the product.
-- [ ] Make offline modes perform no network requests and execute no application code.
-- [ ] Use explicit operator-provided facts or narrowly scoped local metadata collection.
-- [ ] Do not import the application, decode attacker-controlled input, execute uploaded code, or exercise the vulnerable path.
-- [ ] Avoid collecting credentials, environment variables, hostnames, process arguments, or application data.
-- [ ] Bound file size, file count, recursion, and parsing work for supplied evidence; keep symlink/archive handling explicit.
-- [ ] If source patterns are examined, label them as review hints, not proof of reachability or taint.
+- [x] Define a small input schema for version/build provenance and this exploit's preconditions.
+- [x] Prefer a standalone Python 3.10+ standard-library implementation when it fits the product.
+- [x] Make offline modes perform no network requests and execute no application code.
+- [x] Use explicit operator-provided facts or narrowly scoped local metadata collection.
+- [x] Do not import the application, decode attacker-controlled input, execute uploaded code, or exercise the vulnerable path.
+- [x] Avoid collecting credentials, environment variables, hostnames, process arguments, or application data.
+- [x] Bound file size, file count, and parsing work for supplied evidence (1 MiB, 10,000 entries, 512-character fields). No archives or directories are read, so symlink/archive handling is not applicable.
+- [x] Not applicable: no source patterns are examined; precondition fields are operator observations only.
 
 ## 3. Preserve uncertainty in the assessment
 
-- [ ] Keep `version_status`, precondition observations, and `exploitability` separate.
-- [ ] Emit `exploitability: not_tested` for every future finding.
-- [ ] Use `potentially_affected` only when evidence matches this advisory's documented range or condition.
-- [ ] Use `fixed_version_reported` only for a supported comparison, without claiming verified deployed patches.
-- [ ] Keep missing, malformed, conflicting, prerelease, vendor/custom-build, possible-backport, and uncovered-future cases `unknown`.
-- [ ] Document unsupported-version handling only where the vendor's lifecycle evidence supports it.
-- [ ] Never convert absent source matches, hidden versions, authentication walls, or blocked requests into a clean result.
-- [ ] Recommend a supported remediation based on the applicable vendor branch; avoid a universal threshold across incompatible branches.
+- [x] Keep `version_status`, precondition observations, and `exploitability` separate.
+- [x] Emit `exploitability: not_tested` for every future finding.
+- [x] Use `potentially_affected` only when evidence matches this advisory's documented range or condition.
+- [x] Use `fixed_version_reported` only for a supported comparison, without claiming verified deployed patches.
+- [x] Keep missing, malformed, conflicting, prerelease, vendor/custom-build, possible-backport, and uncovered-future cases `unknown`.
+- [x] Document unsupported-version handling only where the vendor's lifecycle evidence supports it.
+- [x] Never convert absent source matches, hidden versions, authentication walls, or blocked requests into a clean result.
+- [x] Recommend a supported remediation based on the applicable vendor branch; avoid a universal threshold across incompatible branches.
 
 ## 4. Add usable reports and documented operation
 
-- [ ] Define JSON and CSV fields, schema version, evidence confidence, rule date, sources, and remediation.
-- [ ] Add a self-contained, script-free HTML report with escaped values and synthetic examples when useful.
-- [ ] Protect CSV consumers from formula injection and keep private paths/data out of shared examples.
-- [ ] Provide actual CLI help, input examples, exit-status semantics, and output-overwrite behavior.
-- [ ] Preserve completed results during interruption; distinguish findings from operational errors.
-- [ ] Add report branding controls only when the reporting implementation exists.
+- [x] Define JSON and CSV fields, schema version, evidence confidence, rule date, sources, and remediation.
+- [x] Add a self-contained, script-free HTML report with escaped values and synthetic examples when useful.
+- [x] Protect CSV consumers from formula injection and keep private paths/data out of shared examples.
+- [x] Provide actual CLI help, input examples, exit-status semantics, and output-overwrite behavior.
+- [x] Distinguish findings (exit 1 with `--fail-on-finding`) from operational errors (exit 2).
+- [ ] Incremental checkpoints for interrupted runs are not implemented; the offline run is short and the report is written atomically at the end.
+- [x] Add report branding controls (`--brand`); no logo option is provided.
 
 ## 5. Gate any optional network mode
 
-- [ ] Establish whether passive metadata can answer this exploit's question; omit network mode if it cannot.
-- [ ] Require explicit target selection and ordinary, bounded requests with verified TLS.
-- [ ] Follow robots policy where applicable; use a descriptive User-Agent, pacing, bounded bodies, and conservative redirects.
-- [ ] Do not inherit environment proxies, downgrade HTTPS, bypass authentication, retry around restrictions, or request sensitive paths.
-- [ ] Keep real assessment targets and data out of automated tests and repository history.
+- [x] Establish whether passive metadata can answer this exploit's question; omit network mode if it cannot. Decision: it cannot (patch state is not visible remotely), so there is no network mode.
+- [x] Not applicable (no network mode): Require explicit target selection and ordinary, bounded requests with verified TLS.
+- [x] Not applicable (no network mode): Follow robots policy where applicable; use a descriptive User-Agent, pacing, bounded bodies, and conservative redirects.
+- [x] Not applicable (no network mode): Do not inherit environment proxies, downgrade HTTPS, bypass authentication, retry around restrictions, or request sensitive paths.
+- [x] Keep real assessment targets and data out of automated tests and repository history.
 
 ## 6. Verify behavior and release honestly
 
-- [ ] Add focused synthetic tests for each relevant affected/fixed boundary and disputed case.
-- [ ] Cover malformed inputs, absent evidence, custom builds, and collector/output safety where implemented.
-- [ ] Use local mocks or loopback fixtures; do not scan public targets in tests.
-- [ ] Avoid tests that merely assert documentation wording or mirror implementation details.
-- [ ] Run documented commands against the actual executable; add CI only after meaningful tests exist.
-- [ ] Distinguish local validation from hosted CI status for the published commit.
-- [ ] Review the diff for secrets, real inventories, unlicensed assets, and scope expansion.
-- [ ] Update README implementation status only after a usable checker and its documented behavior are verified.
-- [ ] Enable a detection rule only in a reviewed implementation change; keep this research record's origin and history.
+- [x] Add focused synthetic tests for each relevant affected/fixed boundary and disputed case.
+- [x] Cover malformed inputs, absent evidence, custom builds, and collector/output safety where implemented.
+- [x] Use local mocks or loopback fixtures; do not scan public targets in tests.
+- [x] Avoid tests that merely assert documentation wording or mirror implementation details.
+- [x] Run documented commands against the actual executable; add CI only after meaningful tests exist.
+- [ ] Distinguish local validation from hosted CI status for the published commit (recorded in the pull request, not here).
+- [x] Review the diff for secrets, real inventories, unlicensed assets, and scope expansion.
+- [x] Update README implementation status only after a usable checker and its documented behavior are verified.
+- [ ] Enable a detection rule only in a reviewed implementation change (`advisory.json` is updated in this change; review is pending).
 
 ## Current acceptance result
 
-**Foundation only.** No checker implementation, scanning, exploit verification,
-or production readiness is claimed. The advisory metadata is deliberately disabled.
+**Implemented: offline version triage.** `copyescape_check.py` compares reported
+versions of Docker Engine/CLI, Docker Desktop, and `moby/go-archive` with the
+primary-source fixes reviewed on 2026-10-24. No scanning, exploit verification,
+network access, or exploitability testing is performed. Docker Sandboxes is
+unsupported pending a primary source, and the go-archive range `>=0.2.2 <0.3.0`
+remains `unknown`. Hosted CI results are tracked on the pull request.

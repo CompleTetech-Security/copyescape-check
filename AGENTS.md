@@ -8,14 +8,21 @@ before changing this project.
 
 This repository covers only **CVE-2026-17106** (Docker copy destination escape). Its aliases
 refer to the same exploit. Keep unrelated vulnerabilities in separate repositories.
-The repository is an initialized research foundation. No checker, tests, or CI
-workflow exists yet; never imply otherwise or document nonexistent commands.
+The checker is implemented: `copyescape_check.py` is an offline, standard-library-only
+version triage tool covering Docker Engine/CLI, Docker Desktop, and `moby/go-archive`.
+It has no network mode (version-only advisory). Docker Sandboxes has no verified
+primary source and must stay unsupported until one is found. Document only commands
+that exist (see `docs/REFERENCE.md`).
 
 ## Project map
 
-- `advisory.json`: source-preserving research record; detection is disabled.
-- `README.md`: exact scope, advisory snapshot, primary sources, and current status.
-- `docs/IMPLEMENTATION.md`: local implementation and verification checklist.
+- `copyescape_check.py`: the checker (`assess_copyescape`, inventory/CSV loaders, reports, CLI).
+- `test_copyescape.py`: boundary, input, and output-safety tests (`python -m unittest -v`).
+- `.github/workflows/tests.yml`: CI on Ubuntu and Windows, Python 3.10 and 3.14.
+- `advisory.json`: source-preserving record plus implementation status and review date.
+- `README.md`: scope, usage, result vocabulary, fixes, limits, and primary sources.
+- `docs/REFERENCE.md`: inputs, fields, outputs, exit codes. `docs/example-*`: synthetic example.
+- `docs/IMPLEMENTATION.md`: implementation and verification checklist.
 - `LICENSING.md`, `CONTRIBUTING.md`, `BRAND_ASSETS.md`: licensing and contribution terms.
 
 ## Implementation constraints
@@ -36,14 +43,14 @@ If passive fetching is justified, preserve verified TLS, relevant robots policy,
 an honest User-Agent, pacing, bounds, conservative redirects, and no inherited
 environment proxy. Editing this repository does not authorize scanning real targets.
 
-Update sources and verification dates only after primary-source review. Preserve
-all advisory caveats and document unresolved conflicts. Treat research metadata as
-disabled until a real implementation is reviewed and tested.
+Update sources, `RULES_DATE`, and verification dates only after primary-source review.
+Preserve all advisory caveats and document unresolved conflicts. The go-archive range
+`>=0.2.2 <0.3.0` stays `unknown` until the sources agree.
 
 ## Validation and delivery
 
-Use focused synthetic cases and local-only fixtures for meaningful behavior tests
-once code exists. Do not invent passing tests, add prose-only tests, or publish
+Use focused synthetic cases and local-only fixtures for meaningful behavior tests.
+Run `python -m unittest -v` and `python copyescape_check.py --help`. Do not invent passing tests, add prose-only tests, or publish
 private assessments. Keep CLI, schemas, methodology, and README aligned. Distinguish
 local results from hosted CI on the exact published commit. Preserve unrelated
 work and follow the licensing and brand policies linked above.
