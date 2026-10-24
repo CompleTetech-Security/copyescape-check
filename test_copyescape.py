@@ -490,7 +490,7 @@ class AuditTests(unittest.TestCase):
         def refuse(*a, **k):
             raise OSError("links unsupported")
         self.patch("os", type("O", (), {"link": staticmethod(refuse), "replace": staticmethod(lambda *a: self.fail("rename fallback")),
-                                        "fsync": staticmethod(lambda fd: None)}))
+                                        "fsync": staticmethod(lambda fd: None), "fstat": staticmethod(__import__("os").fstat)}))
         target = self.dir / "out.json"
         code, _, err = run("--version", "go-archive=0.1.0", "--format", "json", "--output", str(target))
         self.assertEqual(2, code)

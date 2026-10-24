@@ -102,7 +102,7 @@ conflicting, vendor/custom, disputed, and uncovered versions are all `unknown`.
 
 Select with `--format csv|json|html` (default `csv`) and `--output FILE` (default stdout).
 
-- **CSV**: one flat row per result with `\n` line endings; every field is quoted so a bare CR cannot start a new record; lists are joined with ` | `. Rows carry `schema_version`, the rule date, sources, evidence type and confidence, and a `complete` column (`true`/`false`; an interrupted run before any row completed yields only the header, so rely on exit status 130 too). A bare quote inside an unquoted field, text after a closing quote, and unterminated quotes are errors. Values that could be read as spreadsheet formulas (leading `=`, `+`, `-`, `@`, tab or carriage return, including after whitespace) are prefixed with an apostrophe.
+- **CSV**: one flat row per result with `\n` line endings; every field is quoted so a bare CR cannot start a new record; lists are joined with ` | `. Rows carry `schema_version`, the rule date, sources, evidence type and confidence, and a `complete` column (`true`/`false`; a zero-result report has an explicit summary row carrying completeness). A bare quote inside an unquoted field, text after a closing quote, and unterminated quotes are errors. Values that could be read as spreadsheet formulas (leading `=`, `+`, `-`, `@`, tab or carriage return, including after whitespace) are prefixed with an apostrophe.
 - **JSON**: an object with `tool`, `tool_version`, `schema_version` (`1.0`), `cve`, `aliases`, `rules_as_of`, `sources`, `generated_at`, `complete`, and `results`.
 - **HTML**: a single self-contained, script-free page (restrictive Content-Security-Policy, no remote assets) with escaped values, summary counts, per-row evidence and limits, and the fix table. `--brand` sets the organization name. See [example-report.html](example-report.html), generated from synthetic data.
 
@@ -130,8 +130,14 @@ The output directory must exist. Input files cannot be the output path, even wit
 | --- | --- |
 | 0 | Completed. No finding was requested, or none exists. |
 | 1 | `--fail-on-finding` was given and at least one result is `potentially_affected`. |
-| 130 | Interrupted (Ctrl+C) while loading inputs or while writing. Completed results are still written (a write interrupted once is retried once as an incomplete report); JSON has `complete: false`, HTML shows an interrupted-run notice, and CSV rows have `complete=false`. |
+| 130 | Interrupted. Completed observations are preserved where possible; the publication rules below distinguish pre-publication recovery, interrupted stdout and an already-published report. |
 | 2 | Operational error: bad usage or arguments, unreadable or invalid input, unsupported component, refused or unwritable output. Operational errors take precedence over findings. The output path is validated before any input is read. |
 
 Unknown results do not change the exit code; review them. Keep real inventories
 and reports outside version control.
+
+## Report publication and interruption
+
+Reports are fully rendered and UTF-8 checked before output starts. An interruption before publication can trigger one incomplete-report attempt; a second interruption can prevent recovery. After stdout starts, no second report is appended and the stream may be truncated. After atomic file publication succeeds, the completed bytes and their original completeness flag are preserved, including when interruption arrives before Python records success. Destination identity is reconciled against the staged inode; an unrelated competing file is not treated as our report. A retry barrier is set inside the guarded try before mutation. If destination metadata cannot be read or a second interruption occurs during reconciliation, the outcome remains unknown and the barrier prevents retry without claiming success. Proven absence or a different inode clears the barrier; matching the staged inode proves publication. The original no-clobber/`--force` choice remains in effect.
+
+CSV retains its existing column order and appends `record_type`: `result` for asset observations, `summary` for a zero-result report. A summary preserves the completeness flag, schema/rule metadata and `not_tested` without inventing an asset finding; consumers must distinguish it from an asset row. NUL-containing CSV input/output is an operational error (exit 2) before stdout, new-file publication or forced replacement. Existing stricter control-character input policies remain in effect. Formula prefixes are neutralized after mixed leading whitespace, including Unicode whitespace.
