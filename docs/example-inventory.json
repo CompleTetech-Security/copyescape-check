@@ -1,0 +1,11 @@
+[
+  {"schema_version": 1, "component": "docker-engine", "label": "example-build-host", "version": "29.6.2",
+   "untrusted_archive_or_container": true, "copy_or_extract_path_used": true, "host_write_privileges": true},
+  {"schema_version": 1, "component": "docker-engine", "label": "example-ci-runner", "version": "29.7.2", "copy_or_extract_path_used": true},
+  {"schema_version": 1, "component": "docker-desktop", "label": "example-laptop", "version": "4.85.0", "platform": "example-os"},
+  {"schema_version": 1, "component": "docker-desktop", "label": "example-workstation", "version": "4.86.0"},
+  {"schema_version": 1, "component": "go-archive", "label": "example-service-a", "version": "0.2.1"},
+  {"schema_version": 1, "component": "go-archive", "label": "example-service-b", "version": "0.2.5"},
+  {"schema_version": 1, "component": "go-archive", "label": "example-service-c", "version": "0.3.0"},
+  {"schema_version": 1, "component": "docker-engine", "label": "example-vendor-package", "version": "29.7.0", "build_source": "vendor"}
+]
