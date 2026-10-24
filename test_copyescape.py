@@ -128,7 +128,7 @@ class InputTests(unittest.TestCase):
 
     def write(self, name, text):
         path = self.dir / name
-        path.write_text(text, encoding="utf-8")
+        path.write_bytes(text.encode("utf-8"))  # exact bytes; no newline translation on Windows
         return path
 
     def entry(self, **extra):
@@ -301,7 +301,7 @@ class HardeningTests(unittest.TestCase):
 
     def write(self, name, text):
         path = self.dir / name
-        path.write_text(text, encoding="utf-8")
+        path.write_bytes(text.encode("utf-8"))  # exact bytes; no newline translation on Windows
         return path
 
     def test_cli_arguments_enforce_the_field_limit(self):
