@@ -54,7 +54,7 @@
   "notes": [
     "Docker official Engine release notes place the fix in 29.7.0, whereas some community reports claim 29.7.2. Prefer 29.7.0 official release source; 29.7.2 repaired compatibility regressions.",
     "Publisher go-archive GHSA affected range is <0.2.2 while GitHub Reviewed entry says <0.3.0; both name patched 0.3.0. Treat the gap as unknown rather than asserting safety.",
-    "Sandboxes 0.38.0 appears in community claims but was not independently verified against a primary release source; omit executable Sandboxes version rule until verified."
+    "Sandboxes 0.38.0 appears in community claims but could not be verified against a primary source (Docker security announcements mention Sandboxes only for other CVEs); no Sandboxes rule is implemented."
   ],
   "sources": [
     "https://docs.docker.com/engine/release-notes/29/#2970",
@@ -62,17 +62,22 @@
     "https://github.com/moby/go-archive/security/advisories/GHSA-hfg8-hc9c-6c3h",
     "https://github.com/advisories/GHSA-hfg8-hc9c-6c3h"
   ],
-  "implementation_status": "planned",
+  "implementation_status": "implemented",
   "verification": "verified_with_range_conflict",
   "status": "new",
-  "verified_at": "2026-10-23",
+  "verified_at": "2026-10-24",
   "repository_url": "https://github.com/CompleteTech-LLC/copyescape-check",
   "schema_version": "1.0",
-  "record_type": "research_only",
-  "detection_enabled": false,
-  "implementation_complete": false,
+  "record_type": "offline_version_checker",
+  "detection_enabled": true,
+  "implementation_complete": true,
   "assessment_performed": false,
   "exploitability": "not_tested",
   "scope_policy": "One distinct exploit per repository; aliases and affected products share this scope.",
-  "research_notice": "Source research for a planned checker; not an executable rule or assessment result."
+  "research_notice": "Offline version-only checker rules reviewed against the primary sources on 2026-10-24; version evidence is not a vulnerability assessment and exploitability is never tested.",
+  "implementation": {
+    "file": "copyescape_check.py",
+    "network_mode": false,
+    "rules_as_of": "2026-10-24"
+  }
 }
