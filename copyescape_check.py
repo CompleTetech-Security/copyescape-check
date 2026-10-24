@@ -527,7 +527,7 @@ A fixed version is a report from vendor sources, not a guarantee. Docker Sandbox
 
 def write_report(output, rows, *, format="csv", brand="CompleteTech LLC", complete=True):
     if format == "csv":
-        writer = csv.DictWriter(output, fieldnames=[*Result.__dataclass_fields__, "complete"], lineterminator="\n")
+        writer = csv.DictWriter(output, fieldnames=[*Result.__dataclass_fields__, "complete"], lineterminator="\n", quoting=csv.QUOTE_ALL)
         writer.writeheader()
         for row in rows:
             writer.writerow({**{key: csv_safe(value) for key, value in row.items()}, "complete": "true" if complete else "false"})

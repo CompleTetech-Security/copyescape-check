@@ -332,12 +332,14 @@ class HardeningTests(unittest.TestCase):
         self.assertTrue(data["complete"])
 
     def test_csv_output_neutralizes_embedded_line_breaks(self):
-        path = self.write("l.csv", 'component,version,label\ngo-archive,0.1.0,"a\rb\nc"\n')
-        _, out, _ = run("--csv", str(path))
-        self.assertNotIn("\r\n", out)
-        rows = list(__import__("csv").DictReader(io.StringIO(out, newline="")))
-        self.assertEqual(1, len(rows))
-        self.assertEqual("a\rb\nc", rows[0]["label"])
+        for label in ("a\rb\nc", "alpha\rbeta", "alpha\r=1+1"):
+            with self.subTest(label=label):
+                path = self.write("l.csv", f'component,version,label\ngo-archive,0.1.0,"{label}"\n')
+                _, out, _ = run("--csv", str(path))
+                self.assertNotIn("\r\n", out)
+                rows = list(__import__("csv").DictReader(io.StringIO(out, newline="")))
+                self.assertEqual(1, len(rows))
+                self.assertEqual(label, rows[0]["label"])
 
     def test_strict_csv_and_json_failure_modes_exit_two_without_traceback(self):
         cases = {
