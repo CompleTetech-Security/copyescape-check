@@ -73,7 +73,7 @@ collection to the specific product and advisory.
 - docker cp copyout or go archive extract
 - host filesystem write privileges
 
-### Outstanding caveats
+### Caveats and how they are handled
 
 - Docker official Engine release notes place the fix in 29.7.0, whereas some community reports claim 29.7.2. Prefer 29.7.0 official release source; 29.7.2 repaired compatibility regressions.
 - Publisher go-archive GHSA affected range is <0.2.2 while GitHub Reviewed entry says <0.3.0; both name patched 0.3.0. Treat the gap as unknown rather than asserting safety.
@@ -129,7 +129,7 @@ collection to the specific product and advisory.
 - [ ] Distinguish local validation from hosted CI status for the published commit (recorded in the pull request, not here).
 - [x] Review the diff for secrets, real inventories, unlicensed assets, and scope expansion.
 - [x] Update README implementation status only after a usable checker and its documented behavior are verified.
-- [ ] Enable a detection rule only in a reviewed implementation change (`advisory.json` is updated in this change; review is pending).
+- [ ] Enable a detection rule only in a reviewed implementation change (`advisory.json` is updated in this change; awaiting maintainer review).
 
 ## Current acceptance result
 
@@ -137,5 +137,5 @@ collection to the specific product and advisory.
 versions of Docker Engine/CLI, Docker Desktop, and `moby/go-archive` with the
 primary-source fixes reviewed on 2026-10-24. No scanning, exploit verification,
 network access, or exploitability testing is performed. Docker Sandboxes is
-unsupported pending a primary source, and the go-archive range `>=0.2.2 <0.3.0`
+unsupported until a primary source exists, and the go-archive range `>=0.2.2 <0.3.0`
 remains `unknown`. Hosted CI results are tracked on the pull request.

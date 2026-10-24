@@ -413,5 +413,138 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("Interrupted run", out)
 
 
+class AuditTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def write(self, name, text):
+        path = self.dir / name
+        path.write_bytes(text.encode("utf-8", "surrogatepass"))
+        return path
+
+    def patch(self, name, value):
+        original = getattr(cc, name)
+        setattr(cc, name, value)
+        self.addCleanup(setattr, cc, name, original)
+        return original
+
+    def test_run_limit_applies_to_every_input_path(self):
+        args = []
+        for _ in range(cc.MAX_INPUTS + 1):
+            args += ["--version", "go-archive=0.3.0"]
+        code, out, _ = run(*args)
+        self.assertEqual(2, code)
+        self.assertEqual("", out)
+        args = args[2:]
+        self.assertEqual(0, run(*args, "--output", str(self.dir / "ok.csv"))[0])
+        inv = self.write("one.json", json.dumps({"schema_version": 1, "component": "go-archive", "version": "0.3.0"}))
+        self.assertEqual(2, run(*args, "--inventory", str(inv))[0])
+        self.assertEqual(2, run(*args, "--csv", str(self.write("one.csv", "component,version\ngo-archive,0.3.0\n")))[0])
+
+    def test_candidate_limit_does_not_count_the_primary_value(self):
+        same = ["0.3.0"] * 128
+        self.assertEqual("fixed_version_reported", assess_copyescape("go-archive", "0.3.0", version_candidates=same)["copyescape_status"])
+        self.assertEqual("conflicting_versions", assess_copyescape("go-archive", "0.3.0", version_candidates=same + ["0.3.0"])["copyescape_version_status"])
+
+    def test_bare_quotes_and_stray_text_in_csv_are_errors(self):
+        for text in ('component,version\ngo-archive,0.1.0"x\n', 'component,version\ngo-archive,"0.1.0"x\n',
+                     'component,version,label\ngo-archive,0.1.0,a"b\n', 'component,version\ngo-archive, "0.1.0"\n'):
+            with self.subTest(text=text):
+                code, _, err = run("--csv", str(self.write("q.csv", text)))
+                self.assertEqual(2, code)
+                self.assertNotIn("Traceback", err)
+        ok = self.write("ok.csv", 'component,version,label\ngo-archive,0.1.0,"a ""quoted"", label"\n')
+        self.assertEqual(0, run("--csv", str(ok))[0])
+
+    def test_csv_rows_carry_a_complete_marker(self):
+        rows = list(__import__("csv").DictReader(io.StringIO(run("--version", "go-archive=0.1.0")[1])))
+        self.assertEqual("true", rows[0]["complete"])
+        original = cc.build_result
+        state = {"n": 0}
+        def flaky(*a, **k):
+            state["n"] += 1
+            if state["n"] == 2:
+                raise KeyboardInterrupt
+            return original(*a, **k)
+        self.patch("build_result", flaky)
+        code, out, _ = run("--version", "go-archive=0.1.0", "--version", "go-archive=0.3.0")
+        self.assertEqual(130, code)
+        self.assertEqual(["false"], [r["complete"] for r in __import__("csv").DictReader(io.StringIO(out))])
+
+    def test_lone_surrogates_exit_two_without_partial_output(self):
+        path = self.write("s.json", '{"schema_version": 1, "component": "go-archive", "version": "0.1.0", "label": "\\ud800"}')
+        for fmt in ("csv", "json", "html"):
+            code, out, err = run("--inventory", str(path), "--format", fmt)
+            self.assertEqual(2, code)
+            self.assertEqual("", out)
+            self.assertNotIn("Traceback", err)
+        target = self.dir / "never.json"
+        self.assertEqual(2, run("--inventory", str(path), "--format", "json", "--output", str(target))[0])
+        self.assertFalse(target.exists())
+
+    def test_no_hard_link_support_fails_closed_without_rename_fallback(self):
+        def refuse(*a, **k):
+            raise OSError("links unsupported")
+        self.patch("os", type("O", (), {"link": staticmethod(refuse), "replace": staticmethod(lambda *a: self.fail("rename fallback")),
+                                        "fsync": staticmethod(lambda fd: None)}))
+        target = self.dir / "out.json"
+        code, _, err = run("--version", "go-archive=0.1.0", "--format", "json", "--output", str(target))
+        self.assertEqual(2, code)
+        self.assertFalse(target.exists())
+        self.assertEqual([], [p for p in self.dir.iterdir() if p.name.startswith(".copyescape-")])
+
+    def test_interruption_while_writing_retries_once_as_incomplete(self):
+        original = cc.write_report
+        state = {"n": 0}
+        def interrupted(output, rows, **options):
+            state["n"] += 1
+            if state["n"] == 1:
+                raise KeyboardInterrupt
+            return original(output, rows, **options)
+        self.patch("write_report", interrupted)
+        target = self.dir / "r.json"
+        code, _, _ = run("--version", "go-archive=0.1.0", "--format", "json", "--output", str(target))
+        self.assertEqual(130, code)
+        self.assertFalse(json.loads(target.read_text(encoding="utf-8"))["complete"])
+        self.patch("write_report", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt))
+        other = self.dir / "r2.json"
+        self.assertEqual(130, run("--version", "go-archive=0.1.0", "--format", "json", "--output", str(other))[0])
+        self.assertFalse(other.exists())
+        self.assertEqual([], [p for p in self.dir.iterdir() if p.name.startswith(".copyescape-")])
+
+    def test_symlink_loop_is_a_sanitized_operational_error(self):
+        loop = self.dir / "loop"
+        try:
+            loop.symlink_to(loop)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        for argv in (["--version", "go-archive=0.1.0", "--output", str(loop / "x.json")],
+                     ["--inventory", str(loop)], ["--csv", str(loop)]):
+            code, _, err = run(*argv)
+            self.assertEqual(2, code)
+            self.assertNotIn("Traceback", err)
+
+    def test_brand_is_bounded_and_control_free(self):
+        self.assertEqual(2, run("--version", "go-archive=0.1.0", "--brand", "x" * 513)[0])
+        self.assertEqual(2, run("--version", "go-archive=0.1.0", "--brand", "a\nb")[0])
+
+    def test_duplicate_key_error_does_not_echo_untrusted_text(self):
+        path = self.write("d.json", '{"schema_version": 1, "evil-token-xyz": 1, "evil-token-xyz": 2}')
+        code, _, err = run("--inventory", str(path))
+        self.assertEqual(2, code)
+        self.assertNotIn("evil-token-xyz", err)
+
+    def test_null_and_wrong_types_are_errors(self):
+        base = {"schema_version": 1, "component": "go-archive", "version": "0.1.0"}
+        for key in ("component", "version", "label", "build_source", "platform", "architecture"):
+            with self.subTest(key=key):
+                entry = {**base, key: None}
+                self.assertEqual(2, run("--inventory", str(self.write("n.json", json.dumps(entry))))[0])
+        self.assertEqual(2, run("--inventory", str(self.write("n2.json", "null")))[0])
+        self.assertEqual(2, run("--version", "docker-sandboxes=0.38.0")[0])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -182,7 +182,7 @@ def assess_copyescape(component, version="", *, version_candidates=None, build_s
         result["copyescape_version_status"] = "unrecognized_or_partial_version"
         notes.append("Version candidates must be strings in a collection; the supplied metadata cannot be compared.")
         return result
-    if len(values) > 128:
+    if len(values) - 1 > 128:
         result["copyescape_version_status"] = "conflicting_versions"
         notes.append("Too many version candidates were supplied for a single assessment.")
         return result
@@ -328,7 +328,7 @@ def load_inventory(path: Path, sink: list) -> list:
         value = {}
         for key, item in pairs:
             if key in value:
-                raise ValueError(f"Duplicate inventory key: {key}")
+                raise ValueError("Duplicate key in inventory JSON")
             value[key] = item
         return value
 
@@ -358,8 +358,40 @@ def _csv_bool(value, column):
     raise ValueError(f"CSV column {column} must be true, false, or empty")
 
 
+def _validate_csv_quotes(text: str) -> None:
+    """Reject a bare quote inside an unquoted field and text after a closing quote."""
+    state = "start"  # start of field, unquoted field, quoted field, just after a closing quote
+    index, length = 0, len(text)
+    while index < length:
+        char = text[index]
+        if state == "start":
+            state = "quoted" if char == '"' else "plain"
+            if char in ",\r\n":
+                state = "start"
+        elif state == "plain":
+            if char == '"':
+                raise ValueError("CSV list contains a bare quote inside an unquoted field")
+            if char in ",\r\n":
+                state = "start"
+        elif state == "quoted":
+            if char == '"':
+                if text[index + 1:index + 2] == '"':
+                    index += 1
+                else:
+                    state = "closed"
+        else:  # closed
+            if char in ",\r\n":
+                state = "start"
+            else:
+                raise ValueError("CSV list has text after a closing quote")
+        index += 1
+    if state == "quoted":
+        raise ValueError("CSV list has an unterminated quoted field")
+
+
 def load_csv(path: Path, sink: list) -> list:
     text = _read_bounded(path, "CSV list").decode("utf-8-sig")
+    _validate_csv_quotes(text)
     reader = csv.DictReader(io.StringIO(text, newline=""), strict=True)
     names = reader.fieldnames or []
     allowed = INVENTORY_FIELDS - {"schema_version"}
@@ -495,10 +527,10 @@ A fixed version is a report from vendor sources, not a guarantee. Docker Sandbox
 
 def write_report(output, rows, *, format="csv", brand="CompleteTech LLC", complete=True):
     if format == "csv":
-        writer = csv.DictWriter(output, fieldnames=list(Result.__dataclass_fields__), lineterminator="\n")
+        writer = csv.DictWriter(output, fieldnames=[*Result.__dataclass_fields__, "complete"], lineterminator="\n")
         writer.writeheader()
         for row in rows:
-            writer.writerow({key: csv_safe(value) for key, value in row.items()})
+            writer.writerow({**{key: csv_safe(value) for key, value in row.items()}, "complete": "true" if complete else "false"})
     elif format == "json":
         json.dump({"tool": "copyescape-check", "tool_version": TOOL_VERSION, "schema_version": SCHEMA_VERSION,
                    "cve": CVE, "aliases": list(ALIASES), "rules_as_of": RULES_DATE, "sources": list(TOOL_SOURCES),
@@ -510,22 +542,31 @@ def write_report(output, rows, *, format="csv", brand="CompleteTech LLC", comple
 
 
 def save_report(path, rows, *, force=False, **options):
-    """Publish a complete file atomically, refusing an existing path by default."""
+    """Render fully first, then publish; refuse an existing path unless force (hard link only, never a rename)."""
+    buffer = io.StringIO(newline="")
+    write_report(buffer, rows, **options)
+    text = buffer.getvalue()
+    text.encode("utf-8")  # Surface lone surrogates before anything is written.
     if path is None:
-        write_report(sys.stdout, rows, **options)
+        sys.stdout.write(text)
         return
     path = Path(path)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", dir=path.parent, prefix=".copyescape-", delete=False) as stream:
             temporary = Path(stream.name)
-            write_report(stream, rows, **options)
+            stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
         if force:
             os.replace(temporary, path)
         else:
-            os.link(temporary, path)  # Atomic no-clobber publication, even if another writer wins the race.
+            try:
+                os.link(temporary, path)  # Atomic no-clobber publication; there is deliberately no rename fallback.
+            except FileExistsError:
+                raise ValueError("Output exists; use a new path or explicitly pass --force") from None
+            except OSError:
+                raise ValueError("Cannot publish without overwrite: the filesystem does not support hard links; choose another directory or pass --force") from None
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -559,9 +600,19 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     rows = []
     complete = True
+
+    def add(result):
+        rows.append(result)
+        if len(rows) > MAX_INPUTS:
+            raise ValueError(f"A run is limited to {MAX_INPUTS:,} inputs")
+
     try:
         if not (args.version or args.inventory or args.csv_lists):
             parser.error("provide --version, --inventory, or --csv")
+        if len(args.brand) > MAX_FIELD or any(ord(c) < 32 or ord(c) == 127 for c in args.brand):
+            raise ValueError(f"--brand must be at most {MAX_FIELD} characters without control characters")
+        if len(args.version) > MAX_INPUTS:
+            raise ValueError(f"A run is limited to {MAX_INPUTS:,} inputs")
         if args.output:  # Validate the destination before reading any input.
             inputs = [*args.inventory, *args.csv_lists]
             if any(args.output.resolve() == p.resolve() for p in inputs):
@@ -572,7 +623,7 @@ def main(argv=None) -> int:
                 raise ValueError("Output directory must already exist")
         try:
             for text in args.version:
-                rows.append(parse_version_argument(text, args.build_source))
+                add(parse_version_argument(text, args.build_source))
             for path in args.inventory:
                 load_inventory(path, rows)
             for path in args.csv_lists:
@@ -580,15 +631,25 @@ def main(argv=None) -> int:
         except KeyboardInterrupt:
             complete = False
             print("Interrupted; preserving completed results.", file=sys.stderr)
+    except RuntimeError:
+        print(f"{parser.prog}: error: a path could not be resolved (symlink loop?)", file=sys.stderr)
+        return 2
     except (OSError, ValueError, UnicodeError, RecursionError, csv.Error) as exc:
         print(f"{parser.prog}: error: {exc}", file=sys.stderr)
         return 2
     records = [asdict(row) for row in rows]
-    try:
-        save_report(args.output, records, force=args.force, format=args.format, brand=args.brand, complete=complete)
-    except (OSError, ValueError) as exc:
-        print(f"Cannot write report: {exc}", file=sys.stderr)
-        return 2
+    for attempt in (1, 2):
+        try:
+            save_report(args.output, records, force=args.force, format=args.format, brand=args.brand, complete=complete)
+            break
+        except KeyboardInterrupt:
+            complete = False  # Retry once, marking the report incomplete.
+            print("Interrupted while writing; retrying once as an incomplete report.", file=sys.stderr)
+            if attempt == 2:
+                return 130
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"Cannot write report: {exc if not isinstance(exc, RuntimeError) else 'path error'}", file=sys.stderr)
+            return 2
     if not complete:
         return 130
     if args.fail_on_finding and any(row["copyescape_status"] == "potentially_affected" for row in records):

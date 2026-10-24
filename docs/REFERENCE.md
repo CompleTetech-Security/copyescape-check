@@ -23,7 +23,7 @@ announcement; go-archive, publisher advisory and GitHub-reviewed advisory.
 
 Documented decisions:
 
-- **Other major lines are `unknown`** (`uncovered_release_line`): Engine other than 29.x, Desktop other than 4.x, go-archive 1.x and later. The sources do not cover them. The sources also do not state the earliest affected version, so a version below the fix on the covered line is only *potentially* affected.
+- **Other major lines are `unknown`** (`uncovered_release_line`): Engine other than 29.x, Desktop other than 4.x, go-archive 1.x and later. The sources do not cover them. Unknown here means "not assessed", not "probably fine": Engine 28.x and older have no published fix in these sources, so treat them as a likely unpatched line to verify with Docker. The sources also do not state the earliest affected version, so a version below the fix on the covered line is only *potentially* affected.
 - **Engine 29.7.0 versus 29.7.2.** The official notes place the fix in 29.7.0. The 29.7.1 and 29.7.2 notes list regression fixes for 29.7.0 and are not the security fix. The threshold is 29.7.0.
 - **go-archive `>=0.2.2 <0.3.0`** is `unknown` with version status `disputed_affected_range`: the publisher advisory says affected `<0.2.2`, the GitHub-reviewed entry says `<0.3.0`. It is not asserted safe.
 - **Docker Sandboxes** has no rule. A "0.38.0" claim has no primary source; `--version docker-sandboxes=...` and inventory components naming Sandboxes are rejected as errors.
@@ -33,7 +33,7 @@ Documented decisions:
 ## Inputs
 
 All input modes can be combined; each entry becomes a separate result. Inputs are
-limited to 1 MiB per file, 10,000 entries per run, and 512 characters per field.
+limited to 1 MiB per file, 10,000 entries per run in total across `--version`, inventory, and CSV (counted while loading), and 512 characters per field.
 
 ### Command-line versions
 
@@ -102,13 +102,11 @@ conflicting, vendor/custom, disputed, and uncovered versions are all `unknown`.
 
 Select with `--format csv|json|html` (default `csv`) and `--output FILE` (default stdout).
 
-- **CSV**: one flat row per result with `\n` line endings; fields containing line breaks are quoted; lists are joined with ` | `. Rows carry `schema_version` and the rule date, sources, evidence type and confidence, but there is no run-completeness envelope. Values that could be read as spreadsheet formulas (leading `=`, `+`, `-`, `@`, tab or carriage return, including after whitespace) are prefixed with an apostrophe.
+- **CSV**: one flat row per result with `\n` line endings; fields containing line breaks are quoted; lists are joined with ` | `. Rows carry `schema_version`, the rule date, sources, evidence type and confidence, and a `complete` column (`true`/`false`; an interrupted run before any row completed yields only the header, so rely on exit status 130 too). A bare quote inside an unquoted field, text after a closing quote, and unterminated quotes are errors. Values that could be read as spreadsheet formulas (leading `=`, `+`, `-`, `@`, tab or carriage return, including after whitespace) are prefixed with an apostrophe.
 - **JSON**: an object with `tool`, `tool_version`, `schema_version` (`1.0`), `cve`, `aliases`, `rules_as_of`, `sources`, `generated_at`, `complete`, and `results`.
 - **HTML**: a single self-contained, script-free page (restrictive Content-Security-Policy, no remote assets) with escaped values, summary counts, per-row evidence and limits, and the fix table. `--brand` sets the organization name. See [example-report.html](example-report.html), generated from synthetic data.
 
-An existing output file is refused unless `--force` is given. Output is written
-to a temporary file and published atomically (a hard link without `--force`, so
-a concurrently created file is never replaced; replacement with `--force`).
+An existing output file is refused unless `--force` is given. The report is fully rendered (encoding errors such as lone surrogates exit 2 before anything is written), saved to a temporary file, and published atomically: a hard link without `--force`, so a concurrently created file is never replaced, and there is no rename fallback. If the filesystem does not support hard links, the run exits 2; replacement with `--force` uses an atomic rename.
 The output directory must exist. Input files cannot be the output path, even with `--force`.
 
 ## CLI options
@@ -121,7 +119,7 @@ The output directory must exist. Input files cannot be the output path, even wit
 | `--csv FILE` | CSV list; repeatable. |
 | `--format csv\|json\|html` | Output format. |
 | `--output FILE`, `--force` | Destination and explicit replacement. |
-| `--brand NAME` | HTML organization name. |
+| `--brand NAME` | HTML organization name; at most 512 characters, no control characters. |
 | `--fail-on-finding` | Exit 1 when a result is `potentially_affected`. |
 | `--tool-version` | Print the checker version. |
 | `--help` | Usage, including exit codes. |
@@ -132,7 +130,7 @@ The output directory must exist. Input files cannot be the output path, even wit
 | --- | --- |
 | 0 | Completed. No finding was requested, or none exists. |
 | 1 | `--fail-on-finding` was given and at least one result is `potentially_affected`. |
-| 130 | Interrupted (Ctrl+C) while loading inputs. Completed results are still written; JSON has `complete: false` and HTML shows an interrupted-run notice (CSV has no marker, so rely on the exit status). |
+| 130 | Interrupted (Ctrl+C) while loading inputs or while writing. Completed results are still written (a write interrupted once is retried once as an incomplete report); JSON has `complete: false`, HTML shows an interrupted-run notice, and CSV rows have `complete=false`. |
 | 2 | Operational error: bad usage or arguments, unreadable or invalid input, unsupported component, refused or unwritable output. Operational errors take precedence over findings. The output path is validated before any input is read. |
 
 Unknown results do not change the exit code; review them. Keep real inventories
