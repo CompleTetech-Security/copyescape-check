@@ -141,3 +141,64 @@ and reports outside version control.
 Reports are fully rendered and UTF-8 checked before output starts. An interruption before publication can trigger one incomplete-report attempt; a second interruption can prevent recovery. After stdout starts, no second report is appended and the stream may be truncated. After atomic file publication succeeds, the completed bytes and their original completeness flag are preserved, including when interruption arrives before Python records success. Destination identity is reconciled against the staged inode; an unrelated competing file is not treated as our report. A retry barrier is set inside the guarded try before mutation. If destination metadata cannot be read or a second interruption occurs during reconciliation, the outcome remains unknown and the barrier prevents retry without claiming success. Proven absence or a different inode clears the barrier; matching the staged inode proves publication. The original no-clobber/`--force` choice remains in effect.
 
 CSV retains its existing column order and appends `record_type`: `result` for asset observations, `summary` for a zero-result report. A summary preserves the completeness flag, schema/rule metadata and `not_tested` without inventing an asset finding; consumers must distinguish it from an asset row. NUL-containing CSV input/output is an operational error (exit 2) before stdout, new-file publication or forced replacement. Existing stricter control-character input policies remain in effect. Formula prefixes are neutralized after mixed leading whitespace, including Unicode whitespace.
+
+## Offline workflow candidates (schema 1.1)
+
+```sh
+python copyescape_check.py --source docs/example-workflow.yml --source-root docs --format json
+python copyescape_check.py --version docker-client=29.6.2 --version docker-engine=29.7.0 --source docs/example-workflow.yml --source-root docs --format html
+```
+
+Repeat `--source` for explicitly selected `.sh`, `.bash`, `.yml` or `.yaml`
+files. `--source-root` is required; resolved sources must stay inside it.
+Nothing is traversed or executed. Plain shell commands and plain/block YAML
+`run:` values are tokenized for direct `docker cp` and `docker container cp`.
+Relative path/line, spelling, direction and limited coverage are reported;
+source strings and operands are not included. Shell continuations and simple
+command separators are recognized. Comments and echo arguments are not commands.
+
+Literal container-to-host, host-to-container and stream syntax is a candidate,
+not proof of an untrusted archive, host writes, reachability or exploitation.
+Variable arguments, ambiguous operands/options and mixed container endpoints
+remain unknown. Drive-letter paths are not assumed to be container names.
+Wrappers (including sudo), aliases, global Docker options, shell functions,
+command substitution, here-documents, YAML anchors/expressions, folded/multiline
+semantics and complex quoting require manual review. No supported command match
+means unknown coverage, never absence or mitigation. Source rows remain unknown,
+with not_tested exploitability and no inferred operator preconditions, even when
+a separate reported component version is fixed.
+
+`docker-cli` / `docker-client` now retain a separate client component instead of
+normalizing to `docker-engine`. Both use their existing vendor release-note
+comparison; Desktop and go-archive keep their independent thresholds. A patched
+server never clears an older client observation. Legacy `docker-engine-cli`
+continues to normalize to `docker-engine` for compatibility; name both components
+explicitly when versions differ.
+
+JSON/CSV schema 1.1 adds `source_path`, `source_line`, `source_spelling`,
+`source_direction` and `source_coverage`; HTML renders the same evidence notes.
+Every input remains bounded to 1 MiB, 100 selected files and 10,000 combined
+results, with 20,000 tokens per workflow line. Inputs must be regular files;
+output checks protect selected source paths and hardlink aliases even with
+--force. Use stable copies; ordinary file checks are not a filesystem sandbox.
+The checker invokes no Docker, shell, container copy or application command.
+
+Command syntax provenance: [official Docker cp reference](https://docs.docker.com/reference/cli/docker/container/cp/),
+reviewed 2026-10-25. Advisory thresholds and RULES_DATE are unchanged.
+
+### Existing Docker version exports
+
+`--docker-version FILE` (repeatable) reads an already-created Docker version
+JSON or default text export. It never runs Docker. JSON `Client.Version` and
+`Server.Version` (plus an explicit `Server.Components` Engine version) are
+independent evidence. Default text extracts Client Version and Server Engine
+Version, ignoring containerd/runc/docker-init version fields. Missing server or
+conflicting versions stay unknown, with `version_candidates` retained. Client
+API versions are never runtime versions. Contexts, hostnames and unrelated
+metadata are not reported. Desktop's application version must still be supplied
+independently; a Server title is not used as its version inventory.
+
+Syntax provenance: [official Docker version reference](https://docs.docker.com/reference/cli/docker/version/),
+reviewed 2026-10-25. This is offline export ingestion, not a local runtime
+collector or attestation. Every new export input is bounded and protected from
+forced output replacement like the other inputs.

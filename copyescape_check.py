@@ -12,14 +12,16 @@ import io
 import json
 import os
 import re
+import shlex
+import stat
 import sys
 import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-TOOL_VERSION = "1.0.0"
-SCHEMA_VERSION = "1.0"
+TOOL_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.1"
 MAX_INPUT = 1024 * 1024
 MAX_INPUTS = 10000
 MAX_FIELD = 512
@@ -97,8 +99,9 @@ COMPONENTS = {
         ),
     },
 }
+COMPONENTS["docker-cli"] = {**COMPONENTS["docker-engine"], "label": "Docker CLI"}
 COMPONENT_ALIASES = {
-    "docker-engine": "docker-engine", "engine": "docker-engine", "docker-cli": "docker-engine",
+    "docker-engine": "docker-engine", "engine": "docker-engine", "docker-cli": "docker-cli", "docker-client": "docker-cli",
     "docker-engine-cli": "docker-engine", "docker-desktop": "docker-desktop", "desktop": "docker-desktop",
     "go-archive": "go-archive", "moby-go-archive": "go-archive",
 }
@@ -272,6 +275,12 @@ class Result:
     copyescape_notes: list = field(default_factory=list)
     copyescape_recommendation: str = ""
     status: str = "offline"
+    source_path: str = ""
+    source_line: int = 0
+    source_spelling: str = ""
+    source_direction: str = "unknown"
+    source_coverage: str = ""
+    version_candidates: list = field(default_factory=list)
 
 
 def build_result(label, source, component, version, build_source="unknown", platform="", architecture="", **observed) -> Result:
@@ -316,11 +325,195 @@ def inventory_result(record, fallback_label="component", source="inventory") -> 
 
 
 def _read_bounded(path: Path, what: str) -> bytes:
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise ValueError(f"{what} must be a regular file")
     with Path(path).open("rb") as stream:
         raw = stream.read(MAX_INPUT + 1)
     if len(raw) > MAX_INPUT:
         raise ValueError(f"{what} exceeds the 1 MiB limit")
     return raw
+
+
+def _workflow_lines(text, yaml=False):
+    """Plain shell lines or plain/block YAML run values, never a YAML evaluator."""
+    block_indent = None
+    pending, first_line = "", 0
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw
+        if yaml:
+            indent = len(raw) - len(raw.lstrip())
+            if block_indent is not None and raw.strip() and indent <= block_indent:
+                block_indent = None
+            if block_indent is None:
+                match = re.match(r"^(\s*)(?:-\s*)?run:\s*(.*)$", raw)
+                if not match:
+                    continue
+                line = match[2]
+                if line.strip() in {"|", "|-", "|+", ">", ">-", ">+"}:
+                    block_indent = indent
+                    continue
+            # No YAML expression evaluation, anchors, includes or shell execution.
+        if not pending:
+            first_line = number
+        pending += line
+        if pending.rstrip().endswith("\\"):
+            pending = pending.rstrip()[:-1] + " "
+            continue
+        yield first_line, pending
+        pending = ""
+    if pending:
+        yield first_line, pending
+
+
+def _copy_direction(arguments):
+    operands, options = [], True
+    for arg in arguments:
+        if options and arg == "--":
+            options = False
+        elif options and arg.startswith("-") and arg != "-":
+            if arg not in {"-a", "--archive", "-L", "--follow-link", "-aL", "-La", "-q", "--quiet"}:
+                return "unknown"
+        else:
+            operands.append(arg)
+    if len(operands) != 2 or any(any(c in arg for c in "$`%{}") for arg in operands):
+        return "unknown"
+    if "-" in operands:
+        return "stream_candidate"
+    def container(arg):
+        if re.match(r"^[A-Za-z]:[\\/]", arg):
+            return False
+        return bool(re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]*:", arg))
+    source, destination = map(container, operands)
+    if source and not destination:
+        return "container_to_host_candidate"
+    if destination and not source:
+        return "host_to_container_candidate"
+    return "unknown"
+
+
+def scan_workflow_text(text, relative_path, *, yaml=False):
+    rows = []
+    for number, line in _workflow_lines(text, yaml):
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()<>")
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            # An unsupported/multiline shell quote is unresolved, never absent.
+            continue
+        if len(tokens) > 20000:
+            raise ValueError("Workflow line exceeds the token limit")
+        commands, start = [], 0
+        for index, token in enumerate(tokens):
+            if token in {";", "&&", "||", "|", "&"}:
+                commands.append(tokens[start:index])
+                start = index + 1
+        commands.append(tokens[start:])
+        for command in commands:
+            offset, spelling = None, ""
+            if command[:2] == ["docker", "cp"]:
+                offset, spelling = 2, "docker cp"
+            elif command[:3] == ["docker", "container", "cp"]:
+                offset, spelling = 3, "docker container cp"
+            if offset is None:
+                continue
+            direction = _copy_direction(command[offset:])
+            row = build_result(relative_path, "source", "docker-cli", "")
+            row.source_path, row.source_line = relative_path, number
+            row.source_spelling, row.source_direction = spelling, direction
+            row.source_coverage = "limited_lexical"
+            row.copyescape_evidence_type = "lexical_workflow_candidate"
+            row.copyescape_evidence_confidence = "insufficient"
+            row.copyescape_notes.append(
+                f"Workflow candidate {relative_path}:{number}: {spelling}; direction={direction}. "
+                "Static syntax does not prove attacker control, deployment, host permissions or a reachable extraction path. "
+                "Aliases, wrappers, interpolation, shell/YAML semantics and multiline quoting need manual review.")
+            rows.append(row)
+            if len(rows) > MAX_INPUTS:
+                raise ValueError("Too many workflow candidates")
+    if not rows:
+        row = build_result(relative_path, "source", "docker-cli", "")
+        row.source_path, row.source_coverage = relative_path, "limited_lexical"
+        row.copyescape_evidence_type = "source_coverage"
+        row.copyescape_evidence_confidence = "insufficient"
+        row.copyescape_notes.append("No supported direct docker cp candidate found; wrappers, aliases, dynamic commands and unsupported YAML/shell remain unknown. No absence or mitigation is established.")
+        rows.append(row)
+    return rows
+
+
+def load_source(path, root, sink):
+    relative = path.resolve().relative_to(root.resolve()).as_posix()
+    if len(relative) > MAX_FIELD:
+        raise ValueError("Source relative path exceeds the field limit")
+    data = _read_bounded(path, "Source").decode("utf-8-sig")
+    rows = scan_workflow_text(data, relative, yaml=path.suffix.lower() in {".yml", ".yaml"})
+    if len(sink) + len(rows) > MAX_INPUTS:
+        raise ValueError("Too many combined inputs")
+    sink.extend(rows)
+
+
+def load_docker_version(path, sink):
+    """Read an existing docker version export. Never invoke Docker or a shell."""
+    text = _read_bounded(path, "Docker version export").decode("utf-8-sig")
+    candidates = {"docker-cli": [], "docker-engine": []}
+    if text.lstrip().startswith("{"):
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("Duplicate Docker metadata key")
+                result[key] = value
+            return result
+        def reject(_):
+            raise ValueError("Non-finite Docker metadata number")
+        data = json.loads(text, object_pairs_hook=unique, parse_constant=reject)
+        if not isinstance(data, dict):
+            raise ValueError("Docker version JSON must be an object")
+        for section, component in [("Client", "docker-cli"), ("Server", "docker-engine")]:
+            value = data.get(section)
+            if value is None:
+                continue
+            if not isinstance(value, dict):
+                raise ValueError("Docker Client/Server metadata must be an object or null")
+            if "Version" in value:
+                candidates[component].append(value["Version"])
+            if section == "Server" and "Components" in value:
+                if not isinstance(value["Components"], list) or len(value["Components"]) > 100:
+                    raise ValueError("Invalid Docker component list")
+                for item in value["Components"]:
+                    if not isinstance(item, dict):
+                        raise ValueError("Invalid Docker component metadata")
+                    if item.get("Name") == "Engine" and "Version" in item:
+                        candidates[component].append(item["Version"])
+    else:
+        section, subcomponent = None, None
+        for line in text.splitlines():
+            match = re.match(r"^(Client|Server):", line)
+            if match:
+                section = "docker-cli" if match[1] == "Client" else "docker-engine"
+                subcomponent = None
+                continue
+            heading = re.match(r"^\s+([^:\s][^:]*):\s*$", line)
+            if heading:
+                subcomponent = heading[1].strip()
+                continue
+            version = re.match(r"^\s+Version:\s*(\S+)\s*$", line)
+            if version and section and (section == "docker-cli" or subcomponent in {None, "Engine"}):
+                candidates[section].append(version[1])
+    if len(sink) + 2 > MAX_INPUTS:
+        raise ValueError("Too many combined inputs")
+    for component, versions in candidates.items():
+        if len(versions) > 128 or any(not isinstance(v, str) or len(v) > MAX_FIELD for v in versions):
+            raise ValueError("Docker versions must be bounded strings")
+        versions = sorted(set(versions))
+        row = build_result(component + " export", "docker_version_export", component, versions[0] if versions else "")
+        if len(versions) > 1:
+            for key, value in assess_copyescape(component, versions[0], version_candidates=versions[1:]).items():
+                setattr(row, key, value)
+        row.version_candidates = versions
+        row.copyescape_notes.append("Existing Docker version export, not live runtime attestation. Client and server are independent; API versions, contexts, hosts, scripts and other component versions are not collected. Desktop version must be supplied independently.")
+        sink.append(row)
 
 
 def load_inventory(path: Path, sink: list) -> list:
@@ -608,7 +801,7 @@ exit status:
   2  operational error (bad usage, unreadable or invalid input, output refused or unwritable)
   130  interrupted; completed results were written (JSON/HTML mark the run incomplete)
 
-components: docker-engine, docker-desktop, go-archive. Docker Sandboxes has no verified rule.
+components: docker-engine, docker-cli (docker-client), docker-desktop, go-archive. Docker Sandboxes has no verified rule.
 This tool is offline: it makes no network requests and runs no Docker or application code.
 """
 
@@ -620,6 +813,9 @@ def main(argv=None) -> int:
     parser.add_argument("--build-source", default="unknown", help="Build provenance applied to --version values (default: unknown); vendor or custom keeps results unknown")
     parser.add_argument("--inventory", action="append", default=[], type=Path, metavar="FILE", help="Read JSON inventory (schema_version 1); repeatable")
     parser.add_argument("--csv", action="append", default=[], type=Path, metavar="FILE", dest="csv_lists", help="Read a CSV list with a component,version header; repeatable")
+    parser.add_argument("--docker-version", action="append", default=[], type=Path, metavar="FILE", help="Read an existing Docker version JSON/text export; never invokes Docker")
+    parser.add_argument("--source", action="append", default=[], type=Path, metavar="FILE", help="Explicit shell or CI YAML file for docker cp candidates; repeatable, never executed")
+    parser.add_argument("--source-root", type=Path, metavar="DIR", help="Required with --source; report relative file/line evidence")
     parser.add_argument("--format", choices=("csv", "json", "html"), default="csv", help="Output format (default: csv)")
     parser.add_argument("--output", type=Path, help="Save report to a new file; default: stdout")
     parser.add_argument("--force", action="store_true", help="Replace an existing output file explicitly")
@@ -636,15 +832,25 @@ def main(argv=None) -> int:
             raise ValueError(f"A run is limited to {MAX_INPUTS:,} inputs")
 
     try:
-        if not (args.version or args.inventory or args.csv_lists):
-            parser.error("provide --version, --inventory, or --csv")
+        if not (args.version or args.inventory or args.csv_lists or args.source or args.docker_version):
+            parser.error("provide --version, --inventory, --csv, --docker-version or --source")
         if len(args.brand) > MAX_FIELD or any(ord(c) < 32 or ord(c) == 127 for c in args.brand):
             raise ValueError(f"--brand must be at most {MAX_FIELD} characters without control characters")
         if len(args.version) > MAX_INPUTS:
             raise ValueError(f"A run is limited to {MAX_INPUTS:,} inputs")
+        inputs = [*args.inventory, *args.csv_lists, *args.source, *args.docker_version]
+        if len(inputs) > 100:
+            raise ValueError("A run is limited to 100 input files")
+        if args.source and (args.source_root is None or not args.source_root.is_dir()):
+            raise ValueError("--source requires an existing --source-root directory")
+        for path in args.source:
+            if not stat.S_ISREG(path.stat().st_mode):
+                raise ValueError("Source must be a regular file")
+            if path.suffix.lower() not in {".sh", ".bash", ".yml", ".yaml"}:
+                raise ValueError("Source must be an explicit shell or CI YAML file")
+            path.resolve().relative_to(args.source_root.resolve())
         if args.output:  # Validate the destination before reading any input.
-            inputs = [*args.inventory, *args.csv_lists]
-            if any(args.output.resolve() == p.resolve() for p in inputs):
+            if any(args.output.resolve() == p.resolve() or (args.output.exists() and os.path.samefile(args.output, p)) for p in inputs):
                 raise ValueError("--output must differ from every input file, even with --force")
             if args.output.exists() and not args.force:
                 raise ValueError("Output exists; use a new path or explicitly pass --force")
@@ -657,6 +863,10 @@ def main(argv=None) -> int:
                 load_inventory(path, rows)
             for path in args.csv_lists:
                 load_csv(path, rows)
+            for path in args.docker_version:
+                load_docker_version(path, rows)
+            for path in args.source:
+                load_source(path, args.source_root, rows)
         except KeyboardInterrupt:
             complete = False
             print("Interrupted; preserving completed results.", file=sys.stderr)

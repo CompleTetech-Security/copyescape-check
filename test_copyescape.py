@@ -233,7 +233,7 @@ class OutputTests(unittest.TestCase):
     def test_json_envelope_and_rows(self):
         _, out, _ = run("--version", "go-archive=0.2.1", "--format", "json")
         data = json.loads(out)
-        self.assertEqual("1.0", data["schema_version"])
+        self.assertEqual("1.1", data["schema_version"])
         self.assertEqual(cc.RULES_DATE, data["rules_as_of"])
         self.assertEqual(list(cc.TOOL_SOURCES), data["sources"])
         row = data["results"][0]

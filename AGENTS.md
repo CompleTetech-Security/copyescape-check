@@ -10,7 +10,7 @@ This repository covers only **CVE-2026-17106** (Docker copy destination escape).
 refer to the same exploit. Keep unrelated vulnerabilities in separate repositories.
 The checker is implemented: `copyescape_check.py` is an offline, standard-library-only
 version triage tool covering Docker Engine/CLI, Docker Desktop, and `moby/go-archive`.
-It has no network mode (version-only advisory). Docker Sandboxes has no verified
+Optional --source inspects bounded lexical shell/CI workflow candidates; it never executes commands. It has no network mode. Docker Sandboxes has no verified
 primary source and must stay unsupported until one is found. Document only commands
 that exist (see `docs/REFERENCE.md`).
 
@@ -18,7 +18,7 @@ that exist (see `docs/REFERENCE.md`).
 
 - `copyescape_check.py`: the checker (`assess_copyescape`, inventory/CSV loaders, reports, CLI).
 - `test_copyescape.py`: boundary, input, and output-safety tests (`python -m unittest -v`).
-- `.github/workflows/tests.yml`: CI on Ubuntu and Windows, Python 3.10 and 3.14.
+- `.github/workflows/tests.yml`: CI on Ubuntu, Windows and macOS, Python 3.10 and 3.14.
 - `advisory.json`: source-preserving record plus implementation status and review date.
 - `README.md`: scope, usage, result vocabulary, fixes, limits, and primary sources.
 - `docs/REFERENCE.md`: inputs, fields, outputs, exit codes. `docs/example-*`: synthetic example.

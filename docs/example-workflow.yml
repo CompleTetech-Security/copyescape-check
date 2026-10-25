@@ -1,0 +1,5 @@
+# Synthetic text fixture only; never executed.
+steps:
+  - run: |
+      docker cp sample-container:/data ./sample-output
+      docker container cp ./sample-input sample-container:/data

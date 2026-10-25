@@ -139,3 +139,7 @@ primary-source fixes reviewed on 2026-10-24. No scanning, exploit verification,
 network access, or exploitability testing is performed. Docker Sandboxes is
 unsupported until a primary source exists, and the go-archive range `>=0.2.2 <0.3.0`
 remains `unknown`. Hosted CI results are tracked on the pull request.
+
+## Workflow extension (2026-10-25)
+
+Explicit bounded shell/CI YAML inputs now produce separate unknown docker cp candidates with relative locations and direction. Client/server component identities are preserved. Synthetic tests cover both spellings, comments, wrappers, variables, directions, continuation/sequence syntax, independent component versions, privacy, output protection/parity and standalone execution. Original publication regression coverage is retained. Local and exact-head hosted checks remain separate; no Docker or exploit command was executed.
