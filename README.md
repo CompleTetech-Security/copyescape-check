@@ -182,3 +182,5 @@ Syntax provenance: [official Docker version reference](https://docs.docker.com/r
 reviewed 2026-10-25. This is offline export ingestion, not a local runtime
 collector or attestation. Every new export input is bounded and protected from
 forced output replacement like the other inputs.
+
+Workflow logical commands are additionally bounded to 64 KiB and 256 physical lines; quoted multiline text and active backslash continuations are tracked without executing shell syntax. Folded YAML scalar bodies remain unresolved rather than being read as separate commands.

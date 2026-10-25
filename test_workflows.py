@@ -61,6 +61,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual([1, 3], [r.source_line for r in rows])
         self.assertEqual(["docker cp", "docker container cp"], [r.source_spelling for r in rows])
         self.assertEqual("host_to_container_candidate", rows[1].source_direction)
+        self.assertEqual("docker cp", self.scan("# comment \\\ndocker cp container:/data ./out\n")[0].source_spelling)
+        self.assertEqual("docker container cp", self.scan("docker con\\\ntainer cp container:/data ./out\n")[0].source_spelling)
+        self.assertEqual("source_coverage", self.scan("echo 'text\ndocker cp container:/data ./out\n'\n")[0].copyescape_evidence_type)
+        self.assertEqual("docker cp", self.scan("docker cp container:/data ./out # $(not-executed)")[0].source_spelling)
+        self.assertEqual("docker cp", self.scan("echo '$(not-executed)' && docker cp container:/data ./out")[0].source_spelling)
+        with self.assertRaises(ValueError):
+            self.scan("echo '" + "\nx" * 300)
 
     def test_yaml_run_plain_and_block_only_without_parsing_other_keys(self):
         source = """steps:
@@ -156,6 +163,9 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual("unknown", row["copyescape_status"])
                 self.assertEqual("", row["reported_version"])
                 self.assertNotIn("No version-based action", row["copyescape_recommendation"])
+                _, html, _ = self.cli("--docker-version", str(path), "--format", "html")
+                self.assertIn("Export version candidates", html)
+                self.assertTrue("29.7.0" in html or "29.6.2" in html)
             path.write_text("29.7.0\n", encoding="utf-8")
             _, out, _ = self.cli("--docker-version", str(path), "--format", "json")
             self.assertTrue(all("No supported component Version" in " ".join(r["copyescape_notes"]) for r in json.loads(out)["results"]))

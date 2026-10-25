@@ -336,14 +336,18 @@ def _read_bounded(path: Path, what: str) -> bytes:
 
 def _workflow_lines(text, yaml=False):
     """Plain shell lines or plain/block YAML run values, never a YAML evaluator."""
-    block_indent = None
+    block_indent, content_indent, folded = None, None, False
     pending, first_line = "", 0
+    physical_lines = 0
     for number, raw in enumerate(text.splitlines(), 1):
         line = raw
         if yaml:
             indent = len(raw) - len(raw.lstrip())
             if block_indent is not None and raw.strip() and indent <= block_indent:
-                block_indent = None
+                if pending:
+                    yield first_line, pending
+                    pending = ""
+                block_indent, content_indent, folded = None, None, False
             if block_indent is None:
                 match = re.match(r"^\s*(?:-\s*)?(?P<key>run):\s*(?P<value>.*)$", raw)
                 if not match:
@@ -351,13 +355,29 @@ def _workflow_lines(text, yaml=False):
                 line = match["value"]
                 if re.fullmatch(r"[|>][-+]?(?:[ \t]+#.*)?", line.strip()):
                     block_indent = match.start("key")
+                    content_indent = None
+                    folded = line.strip().startswith(">")
                     continue
+            else:
+                if folded:
+                    continue  # Folded-scalar shell semantics remain unsupported.
+                if raw.strip() and content_indent is None:
+                    content_indent = indent
+                line = raw[content_indent:] if content_indent is not None else ""
             # No YAML expression evaluation, anchors, includes or shell execution.
         if not pending:
             first_line = number
+            physical_lines = 0
+        physical_lines += 1
         pending += line
-        if pending.rstrip().endswith("\\"):
-            pending = pending.rstrip()[:-1] + " "
+        if len(pending) > 65536 or physical_lines > 256:
+            raise ValueError("Workflow logical command limit exceeded")
+        _, continuation, quote, _ = _shell_walk(pending)
+        if continuation:
+            pending = pending[:-1]
+            continue
+        if quote:
+            pending += "\n"
             continue
         yield first_line, pending
         pending = ""
@@ -391,12 +411,10 @@ def _copy_direction(arguments):
     return "unknown"
 
 
-def _shell_segments(line):
-    """Split only unquoted/unescaped operators before shlex removes quoting."""
-    if "$(" in line or "`" in line:
-        return []
+def _shell_walk(line):
+    """Shared quote/comment/escape walk for continuation and command boundaries."""
     quote, escaped, first, index, word_start = None, False, 0, 0, True
-    segments = []
+    segments, unsupported = [], False
     while index < len(line):
         char = line[index]
         if escaped:
@@ -406,6 +424,8 @@ def _shell_segments(line):
             escaped = True
             word_start = False
         elif quote:
+            if quote == '"' and (char == "`" or line[index:index + 2] == "$("):
+                unsupported = True
             if char == quote:
                 quote = None
         elif char in {"'", '"'}:
@@ -414,6 +434,9 @@ def _shell_segments(line):
         elif char == "#" and word_start:
             line = line[:index]
             break
+        elif char == "`" or line[index:index + 2] == "$(":
+            unsupported = True
+            word_start = False
         elif char in ";&|":
             segments.append(line[first:index])
             width = 2 if line[index:index + 2] in {"&&", "||"} else 1
@@ -424,10 +447,13 @@ def _shell_segments(line):
         elif quote is None:
             word_start = char.isspace() or char in "()<>"
         index += 1
-    if quote or escaped:
-        return []
     segments.append(line[first:])
-    return segments
+    return segments, escaped and quote != "'", quote, unsupported
+
+
+def _shell_segments(line):
+    segments, continuation, quote, unsupported = _shell_walk(line)
+    return [] if continuation or quote or unsupported else segments
 
 
 def scan_workflow_text(text, relative_path, *, yaml=False):
@@ -559,6 +585,8 @@ def load_docker_version(path, sink):
         row.copyescape_evidence_type = "docker_version_export"
         row.copyescape_evidence_confidence = "insufficient" if row.copyescape_status == "unknown" else "low"
         row.version_candidates = versions
+        if versions:
+            row.copyescape_notes.append("Export version candidates: " + ", ".join(version or "(blank)" for version in versions))
         row.copyescape_notes.append("Existing Docker version export, not live runtime attestation. Client and server are independent; API versions, contexts, hosts, scripts and other component versions are not collected. Desktop version must be supplied independently.")
         sink.append(row)
 
