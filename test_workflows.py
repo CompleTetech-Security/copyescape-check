@@ -30,6 +30,11 @@ class WorkflowTests(unittest.TestCase):
         for literal in ("'<<'", '"<<"', r"\<\<"):
             rows = self.scan("printf %s " + literal + "\ndocker cp container:/data ./out\n")
             self.assertEqual([2], [row.source_line for row in rows])
+        escaped = self.scan("cat release\\ #1 <<EOF\ndocker cp container:/data ./out\nEOF\ndocker cp ./in container:/out\n")
+        self.assertEqual([4], [row.source_line for row in escaped])
+        for unresolved in ('cat <<<"hello"', 'cat <<EOF'):
+            source = "steps:\n  - run: |\n      " + unresolved + "\n  - run: docker cp container:/data ./out\n"
+            self.assertEqual([4], [row.source_line for row in self.scan(source, yaml=True)])
         for marker in ("EOF", "'EOF'", '"EOF"'):
             rows = self.scan("cat <<" + marker + "\ndocker cp container:/data ./out\nEOF\ndocker cp ./in container:/out\n")
             self.assertEqual([4], [row.source_line for row in rows])

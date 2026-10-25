@@ -362,6 +362,7 @@ def _workflow_lines(text, yaml=False):
                 match = re.match(r"^\s*(?:-\s*)?(?P<key>run):\s*(?P<value>.*)$", raw)
                 if not match:
                     continue
+                heredocs = []  # Each YAML run value is an independent script.
                 line = match["value"]
                 if re.fullmatch(r"[|>][-+]?(?:[ \t]+#.*)?", line.strip()):
                     block_indent = match.start("key")
@@ -412,6 +413,9 @@ def _heredoc_markers(line):
         char = line[index]
         if escaped:
             escaped = False
+            word_start = False
+            index += 1
+            continue
         elif char == "\\" and quote != "'":
             escaped = True
         elif quote:
