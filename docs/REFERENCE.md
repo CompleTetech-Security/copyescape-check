@@ -204,3 +204,7 @@ collector or attestation. Every new export input is bounded and protected from
 forced output replacement like the other inputs.
 
 Workflow logical commands are additionally bounded to 64 KiB and 256 physical lines; quoted multiline text and active backslash continuations are tracked without executing shell syntax. Folded YAML scalar bodies remain unresolved rather than being read as separate commands.
+
+Non-run YAML block scalars and literal here-document bodies are skipped.
+Here-strings and unusual redirect delimiters remain unresolved; candidate absence
+is never evidence that the workflow is unaffected.

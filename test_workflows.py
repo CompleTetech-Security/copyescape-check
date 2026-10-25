@@ -24,6 +24,14 @@ class WorkflowTests(unittest.TestCase):
     def scan(self, text, yaml=False):
         return c.scan_workflow_text(text, "ci/build.yml" if yaml else "scripts/copy.sh", yaml=yaml)
 
+    def test_literal_yaml_scalars_and_heredoc_bodies_are_not_commands(self):
+        for source in ("description: |\n  run: docker cp container:/data ./out\n", "env:\n  BODY: >\n    run: docker cp container:/data ./out\n"):
+            self.assertEqual("source_coverage", self.scan(source, yaml=True)[0].copyescape_evidence_type)
+        for marker in ("EOF", "'EOF'", '"EOF"'):
+            rows = self.scan("cat <<" + marker + "\ndocker cp container:/data ./out\nEOF\ndocker cp ./in container:/out\n")
+            self.assertEqual([4], [row.source_line for row in rows])
+            self.assertEqual("host_to_container_candidate", rows[0].source_direction)
+
     def test_spellings_and_copy_directions_without_runtime_preconditions(self):
         for command, direction in [
             ("docker cp container:/data ./out", "container_to_host_candidate"),
@@ -149,6 +157,7 @@ class WorkflowTests(unittest.TestCase):
         cases = [
             '{"Server":{"Version":"","Components":[{"Name":"Engine","Version":"29.7.0"}]}}',
             '{"Server":{"Version":"  ","Components":[{"Name":"Engine","Version":"29.7.0"}]}}',
+            json.dumps({"Server": {"Version": "\f", "Components": [{"Name": "Engine", "Version": "29.7.0"}]}}),
             'Server:\n Version: 29.7.0\n Engine:\n  Version: 29.6.2 (vendor)\n',
             'Server:\n Version: 29.7.0\nServer:\n Version: 29.6.2\n',
             'Server:\n Version: \n Engine:\n  Version: 29.7.0\n',

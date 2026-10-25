@@ -339,6 +339,8 @@ def _workflow_lines(text, yaml=False):
     block_indent, content_indent, folded = None, None, False
     pending, first_line = "", 0
     physical_lines = 0
+    skipped_scalar = None
+    heredocs = []
     for number, raw in enumerate(text.splitlines(), 1):
         line = raw
         if yaml:
@@ -349,6 +351,14 @@ def _workflow_lines(text, yaml=False):
                     pending = ""
                 block_indent, content_indent, folded = None, None, False
             if block_indent is None:
+                if skipped_scalar is not None:
+                    if not raw.strip() or indent > skipped_scalar:
+                        continue
+                    skipped_scalar = None
+                scalar = re.match(r"^\s*(?:-\s*)?(?P<key>[^:#]+):\s*[|>][-+]?(?:[ \t]+#.*)?$", raw)
+                if scalar and scalar["key"].strip() != "run":
+                    skipped_scalar = scalar.start("key")
+                    continue
                 match = re.match(r"^\s*(?:-\s*)?(?P<key>run):\s*(?P<value>.*)$", raw)
                 if not match:
                     continue
@@ -365,6 +375,11 @@ def _workflow_lines(text, yaml=False):
                     content_indent = indent
                 line = raw[content_indent:] if content_indent is not None else ""
             # No YAML expression evaluation, anchors, includes or shell execution.
+        if heredocs:
+            delimiter, tabs = heredocs[0]
+            if (line.lstrip("\t") if tabs else line) == delimiter:
+                heredocs.pop(0)
+            continue
         if not pending:
             first_line = number
             physical_lines = 0
@@ -379,6 +394,26 @@ def _workflow_lines(text, yaml=False):
         if quote:
             pending += "\n"
             continue
+        # shlex respects quoted delimiter words; bodies are data, not commands.
+        for segment in _shell_segments(pending):
+            try:
+                words = shlex.shlex(segment, posix=True, punctuation_chars="()<>")
+                words.whitespace_split = True
+                words.commenters = ""
+                words = list(words)
+            except ValueError:
+                continue
+            for position, word in enumerate(words[:-1]):
+                if word == "<<":
+                    delimiter = words[position + 1]
+                    tabs = delimiter.startswith("-")
+                    delimiter = delimiter[1:] if tabs else delimiter
+                    if not delimiter or len(heredocs) >= 32:
+                        raise ValueError("Unsupported here-document delimiter")
+                    heredocs.append((delimiter, tabs))
+                elif word == "<<<":
+                    # Here-strings and unusual redirect syntax remain unresolved.
+                    heredocs.append(("\0unsupported", False))
         yield first_line, pending
         pending = ""
     if pending:
@@ -571,7 +606,7 @@ def load_docker_version(path, sink):
         if len(versions) > 1:
             for key, value in assess_copyescape(component, versions[0], version_candidates=versions[1:]).items():
                 setattr(row, key, value)
-        if any(not version.strip(" \t\r\n") for version in versions):
+        if any(not version.strip() for version in versions):
             row.copyescape_status = "unknown"
             row.copyescape_version_status = "missing_or_conflicting_export_version"
             row.copyescape_recommendation = COMPONENTS[component]["recommendation"]
