@@ -52,6 +52,9 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual("source_coverage", row.copyescape_evidence_type)
                 self.assertEqual("unknown", row.source_direction)
         self.assertEqual("container_to_host_candidate", self.scan("docker cp container:/data ';'")[0].source_direction)
+        for prefix in ["echo release#1", "echo ''#1", "echo release\\ #1"]:
+            self.assertEqual("docker cp", self.scan(prefix + " && docker cp container:/data ./out")[0].source_spelling)
+        self.assertEqual("source_coverage", self.scan("echo release # comment; docker cp container:/data ./out")[0].copyescape_evidence_type)
 
     def test_shell_sequences_and_line_continuations_have_relative_locations(self):
         rows = self.scan("echo ready && docker cp c:/data ./out\n\ndocker container \\\ncp ./input ctr:/data\n")
@@ -83,6 +86,7 @@ class WorkflowTests(unittest.TestCase):
         docker cp container:/not-a-command ./out
 """
         self.assertEqual("source_coverage", self.scan(source, yaml=True)[0].copyescape_evidence_type)
+        self.assertEqual("docker cp", self.scan("steps:\n  - run: | # copy output\n      docker cp container:/data ./out\n", yaml=True)[0].source_spelling)
 
     def test_no_source_contents_or_operands_in_report(self):
         row = self.scan("docker cp SECRET-CONTAINER:/PRIVATE-FILE ./PRIVATE-OUTPUT")[0]
@@ -151,12 +155,17 @@ class WorkflowTests(unittest.TestCase):
                 row = json.loads(out)["results"][1]
                 self.assertEqual("unknown", row["copyescape_status"])
                 self.assertEqual("", row["reported_version"])
+                self.assertNotIn("No version-based action", row["copyescape_recommendation"])
             path.write_text("29.7.0\n", encoding="utf-8")
             _, out, _ = self.cli("--docker-version", str(path), "--format", "json")
             self.assertTrue(all("No supported component Version" in " ".join(r["copyescape_notes"]) for r in json.loads(out)["results"]))
             path.write_text("Client:\n Version: 29.7.0\n plugin:\n  Version: 99.0.0\n", encoding="utf-8")
             _, out, _ = self.cli("--docker-version", str(path), "--format", "json")
             self.assertEqual(["29.7.0"], json.loads(out)["results"][0]["version_candidates"])
+            for version in ["vv29.7.0", "v 29.7.0"]:
+                path.write_text(json.dumps({"Client": {"Version": version}}), encoding="utf-8")
+                _, out, _ = self.cli("--docker-version", str(path), "--format", "json")
+                self.assertEqual("unknown", json.loads(out)["results"][0]["copyescape_status"])
 
     def test_explicit_source_root_output_protection_and_standalone_copy(self):
         with tempfile.TemporaryDirectory() as directory:

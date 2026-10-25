@@ -349,7 +349,7 @@ def _workflow_lines(text, yaml=False):
                 if not match:
                     continue
                 line = match["value"]
-                if line.strip() in {"|", "|-", "|+", ">", ">-", ">+"}:
+                if re.fullmatch(r"[|>][-+]?(?:[ \t]+#.*)?", line.strip()):
                     block_indent = match.start("key")
                     continue
             # No YAML expression evaluation, anchors, includes or shell execution.
@@ -395,20 +395,23 @@ def _shell_segments(line):
     """Split only unquoted/unescaped operators before shlex removes quoting."""
     if "$(" in line or "`" in line:
         return []
-    quote, escaped, first, index = None, False, 0, 0
+    quote, escaped, first, index, word_start = None, False, 0, 0, True
     segments = []
     while index < len(line):
         char = line[index]
         if escaped:
             escaped = False
+            word_start = False
         elif char == "\\" and quote != "'":
             escaped = True
+            word_start = False
         elif quote:
             if char == quote:
                 quote = None
         elif char in {"'", '"'}:
             quote = char
-        elif char == "#":
+            word_start = False
+        elif char == "#" and word_start:
             line = line[:index]
             break
         elif char in ";&|":
@@ -416,7 +419,10 @@ def _shell_segments(line):
             width = 2 if line[index:index + 2] in {"&&", "||"} else 1
             index += width
             first = index
+            word_start = True
             continue
+        elif quote is None:
+            word_start = char.isspace() or char in "()<>"
         index += 1
     if quote or escaped:
         return []
@@ -534,14 +540,15 @@ def load_docker_version(path, sink):
     for component, versions in candidates.items():
         if len(versions) > 128 or any(not isinstance(v, str) or len(v) > MAX_FIELD for v in versions):
             raise ValueError("Docker versions must be bounded strings")
-        versions = sorted({version.strip(" \t\r\n").removeprefix("v") for version in versions})
+        versions = sorted(set(versions))
         row = build_result(component + " export", "docker_version_export", component, versions[0] if len(versions) == 1 else "")
         if len(versions) > 1:
             for key, value in assess_copyescape(component, versions[0], version_candidates=versions[1:]).items():
                 setattr(row, key, value)
-        if "" in versions:
+        if any(not version.strip(" \t\r\n") for version in versions):
             row.copyescape_status = "unknown"
             row.copyescape_version_status = "missing_or_conflicting_export_version"
+            row.copyescape_recommendation = COMPONENTS[component]["recommendation"]
             row.copyescape_notes.append("An explicit blank version field is unresolved; another version cannot clear it.")
         if not versions:
             row.copyescape_notes.append("No supported component Version field was recognized; custom templates or unsupported text remain unknown, not clean.")
