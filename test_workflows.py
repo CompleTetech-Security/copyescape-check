@@ -166,6 +166,10 @@ class WorkflowTests(unittest.TestCase):
                 path.write_text(json.dumps({"Client": {"Version": version}}), encoding="utf-8")
                 _, out, _ = self.cli("--docker-version", str(path), "--format", "json")
                 self.assertEqual("unknown", json.loads(out)["results"][0]["copyescape_status"])
+            path.write_text('{"Server":{"Version":"v29.7.0","Components":[{"Name":"Engine","Version":"29.7.0"}]}}', encoding="utf-8")
+            _, out, _ = self.cli("--docker-version", str(path), "--format", "json")
+            row = json.loads(out)["results"][1]
+            self.assertEqual(("fixed_version_reported", "29.7.0"), (row["copyescape_status"], row["reported_version"]))
 
     def test_explicit_source_root_output_protection_and_standalone_copy(self):
         with tempfile.TemporaryDirectory() as directory:

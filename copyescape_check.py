@@ -550,6 +550,10 @@ def load_docker_version(path, sink):
             row.copyescape_version_status = "missing_or_conflicting_export_version"
             row.copyescape_recommendation = COMPONENTS[component]["recommendation"]
             row.copyescape_notes.append("An explicit blank version field is unresolved; another version cannot clear it.")
+        elif len(versions) > 1 and row.copyescape_status != "unknown":
+            # Equivalent supported spellings can agree after the assessor's
+            # single normalization. Give that non-conflicting row a version.
+            row.reported_version = versions[0].strip(" \t\r\n").removeprefix("v")
         if not versions:
             row.copyescape_notes.append("No supported component Version field was recognized; custom templates or unsupported text remain unknown, not clean.")
         row.copyescape_evidence_type = "docker_version_export"
