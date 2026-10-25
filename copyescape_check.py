@@ -342,6 +342,8 @@ def _workflow_lines(text, yaml=False):
     skipped_scalar = None
     heredocs = []
     for number, raw in enumerate(text.splitlines(), 1):
+        if len(raw)>65536:
+            raise ValueError("Workflow physical line limit exceeded")
         line = raw
         if yaml:
             indent = len(raw) - len(raw.lstrip())
@@ -355,7 +357,7 @@ def _workflow_lines(text, yaml=False):
                     if not raw.strip() or indent > skipped_scalar:
                         continue
                     skipped_scalar = None
-                scalar = re.match(r"^\s*(?:-\s*)?(?P<key>[^:#]+):\s*[|>][-+]?(?:[ \t]+#.*)?$", raw)
+                scalar = re.match(r"^\s*(?:-\s*)?(?P<key>[^\s:#][^:#]*):\s*[|>][-+]?(?:[ \t]+#.*)?$", raw)
                 if scalar and scalar["key"].strip() != "run":
                     skipped_scalar = scalar.start("key")
                     continue
@@ -395,8 +397,7 @@ def _workflow_lines(text, yaml=False):
         if quote:
             pending += "\n"
             continue
-        for segment in _shell_segments(pending):
-            heredocs.extend(_heredoc_markers(segment))
+        heredocs.extend(_heredoc_markers(pending))
         if len(heredocs) > 32:
             raise ValueError("Too many here-document delimiters")
         yield first_line, pending
@@ -445,7 +446,7 @@ def _heredoc_markers(line):
                 markers.append((delimiter, tabs))
             index += 2
             continue
-        word_start = char.isspace() or char in "()<>"
+        word_start = char.isspace() or char in "()<>;&|"
         index += 1
     return markers
 
