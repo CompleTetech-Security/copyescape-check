@@ -345,12 +345,12 @@ def _workflow_lines(text, yaml=False):
             if block_indent is not None and raw.strip() and indent <= block_indent:
                 block_indent = None
             if block_indent is None:
-                match = re.match(r"^(\s*)(?:-\s*)?run:\s*(.*)$", raw)
+                match = re.match(r"^\s*(?:-\s*)?(?P<key>run):\s*(?P<value>.*)$", raw)
                 if not match:
                     continue
-                line = match[2]
+                line = match["value"]
                 if line.strip() in {"|", "|-", "|+", ">", ">-", ">+"}:
-                    block_indent = indent
+                    block_indent = match.start("key")
                     continue
             # No YAML expression evaluation, anchors, includes or shell execution.
         if not pending:
@@ -391,26 +391,54 @@ def _copy_direction(arguments):
     return "unknown"
 
 
+def _shell_segments(line):
+    """Split only unquoted/unescaped operators before shlex removes quoting."""
+    if "$(" in line or "`" in line:
+        return []
+    quote, escaped, first, index = None, False, 0, 0
+    segments = []
+    while index < len(line):
+        char = line[index]
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == "#":
+            line = line[:index]
+            break
+        elif char in ";&|":
+            segments.append(line[first:index])
+            width = 2 if line[index:index + 2] in {"&&", "||"} else 1
+            index += width
+            first = index
+            continue
+        index += 1
+    if quote or escaped:
+        return []
+    segments.append(line[first:])
+    return segments
+
+
 def scan_workflow_text(text, relative_path, *, yaml=False):
     rows = []
     for number, line in _workflow_lines(text, yaml):
-        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()<>")
-        lexer.whitespace_split = True
-        lexer.commenters = "#"
-        try:
-            tokens = list(lexer)
-        except ValueError:
-            # An unsupported/multiline shell quote is unresolved, never absent.
-            continue
-        if len(tokens) > 20000:
-            raise ValueError("Workflow line exceeds the token limit")
-        commands, start = [], 0
-        for index, token in enumerate(tokens):
-            if token in {";", "&&", "||", "|", "&"}:
-                commands.append(tokens[start:index])
-                start = index + 1
-        commands.append(tokens[start:])
-        for command in commands:
+        token_count = 0
+        for segment in _shell_segments(line):
+            lexer = shlex.shlex(segment, posix=True, punctuation_chars="()<>")
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            try:
+                command = list(lexer)
+            except ValueError:
+                continue
+            token_count += len(command)
+            if token_count > 20000:
+                raise ValueError("Workflow line exceeds the token limit")
             offset, spelling = None, ""
             if command[:2] == ["docker", "cp"]:
                 offset, spelling = 2, "docker cp"
@@ -495,22 +523,30 @@ def load_docker_version(path, sink):
                 subcomponent = None
                 continue
             heading = re.match(r"^\s+([^:\s][^:]*):\s*$", line)
-            if heading:
+            if heading and heading[1].strip() != "Version":
                 subcomponent = heading[1].strip()
                 continue
-            version = re.match(r"^\s+Version:\s*(\S+)\s*$", line)
-            if version and section and (section == "docker-cli" or subcomponent in {None, "Engine"}):
+            version = re.match(r"^[ \t]+Version:[ \t]*(.*?)[ \t]*$", line)
+            if version and section and (subcomponent is None or (section == "docker-engine" and subcomponent == "Engine")):
                 candidates[section].append(version[1])
     if len(sink) + 2 > MAX_INPUTS:
         raise ValueError("Too many combined inputs")
     for component, versions in candidates.items():
         if len(versions) > 128 or any(not isinstance(v, str) or len(v) > MAX_FIELD for v in versions):
             raise ValueError("Docker versions must be bounded strings")
-        versions = sorted(set(versions))
-        row = build_result(component + " export", "docker_version_export", component, versions[0] if versions else "")
+        versions = sorted({version.strip(" \t\r\n").removeprefix("v") for version in versions})
+        row = build_result(component + " export", "docker_version_export", component, versions[0] if len(versions) == 1 else "")
         if len(versions) > 1:
             for key, value in assess_copyescape(component, versions[0], version_candidates=versions[1:]).items():
                 setattr(row, key, value)
+        if "" in versions:
+            row.copyescape_status = "unknown"
+            row.copyescape_version_status = "missing_or_conflicting_export_version"
+            row.copyescape_notes.append("An explicit blank version field is unresolved; another version cannot clear it.")
+        if not versions:
+            row.copyescape_notes.append("No supported component Version field was recognized; custom templates or unsupported text remain unknown, not clean.")
+        row.copyescape_evidence_type = "docker_version_export"
+        row.copyescape_evidence_confidence = "insufficient" if row.copyescape_status == "unknown" else "low"
         row.version_candidates = versions
         row.copyescape_notes.append("Existing Docker version export, not live runtime attestation. Client and server are independent; API versions, contexts, hosts, scripts and other component versions are not collected. Desktop version must be supplied independently.")
         sink.append(row)
