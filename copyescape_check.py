@@ -394,30 +394,56 @@ def _workflow_lines(text, yaml=False):
         if quote:
             pending += "\n"
             continue
-        # shlex respects quoted delimiter words; bodies are data, not commands.
         for segment in _shell_segments(pending):
-            try:
-                words = shlex.shlex(segment, posix=True, punctuation_chars="()<>")
-                words.whitespace_split = True
-                words.commenters = ""
-                words = list(words)
-            except ValueError:
-                continue
-            for position, word in enumerate(words[:-1]):
-                if word == "<<":
-                    delimiter = words[position + 1]
-                    tabs = delimiter.startswith("-")
-                    delimiter = delimiter[1:] if tabs else delimiter
-                    if not delimiter or len(heredocs) >= 32:
-                        raise ValueError("Unsupported here-document delimiter")
-                    heredocs.append((delimiter, tabs))
-                elif word == "<<<":
-                    # Here-strings and unusual redirect syntax remain unresolved.
-                    heredocs.append(("\0unsupported", False))
+            heredocs.extend(_heredoc_markers(segment))
+        if len(heredocs) > 32:
+            raise ValueError("Too many here-document delimiters")
         yield first_line, pending
         pending = ""
     if pending:
         yield first_line, pending
+
+
+def _heredoc_markers(line):
+    """Recognize active redirection operators before shlex removes quoting."""
+    quote, escaped, index, word_start = None, False, 0, True
+    markers = []
+    while index < len(line):
+        char = line[index]
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote: quote = None
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == "#" and word_start:
+            break
+        elif line[index:index+2] == "<<":
+            if line[index:index+3] == "<<<":
+                markers.append(("\0unsupported", False))
+                index += 3
+                continue
+            tail = line[index+2:]
+            tabs = tail.startswith("-")
+            if tabs: tail = tail[1:]
+            try:
+                lexer = shlex.shlex(tail, posix=True, punctuation_chars="()<>")
+                lexer.whitespace_split = True
+                lexer.commenters = ""
+                delimiter = next(iter(lexer), "")
+            except ValueError:
+                delimiter = ""
+            if not delimiter:
+                markers.append(("\0unsupported", False))
+            else:
+                markers.append((delimiter, tabs))
+            index += 2
+            continue
+        word_start = char.isspace() or char in "()<>"
+        index += 1
+    return markers
 
 
 def _copy_direction(arguments):

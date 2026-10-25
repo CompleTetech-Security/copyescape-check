@@ -27,6 +27,9 @@ class WorkflowTests(unittest.TestCase):
     def test_literal_yaml_scalars_and_heredoc_bodies_are_not_commands(self):
         for source in ("description: |\n  run: docker cp container:/data ./out\n", "env:\n  BODY: >\n    run: docker cp container:/data ./out\n"):
             self.assertEqual("source_coverage", self.scan(source, yaml=True)[0].copyescape_evidence_type)
+        for literal in ("'<<'", '"<<"', r"\<\<"):
+            rows = self.scan("printf %s " + literal + "\ndocker cp container:/data ./out\n")
+            self.assertEqual([2], [row.source_line for row in rows])
         for marker in ("EOF", "'EOF'", '"EOF"'):
             rows = self.scan("cat <<" + marker + "\ndocker cp container:/data ./out\nEOF\ndocker cp ./in container:/out\n")
             self.assertEqual([4], [row.source_line for row in rows])
