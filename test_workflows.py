@@ -25,6 +25,29 @@ class WorkflowTests(unittest.TestCase):
     def scan(self, text, yaml=False):
         return c.scan_workflow_text(text, "ci/build.yml" if yaml else "scripts/copy.sh", yaml=yaml)
 
+    def test_yaml_indicators_heredoc_separators_and_ampersand_redirections(self):
+        for indicator in ('|2','|2-','|-2','>2+','>+2'):
+            rows=self.scan('env:\n  BODY: '+indicator+'\n    run: docker cp c:/data ./text\n',yaml=True)
+            self.assertFalse(any(r.copyescape_evidence_type=='lexical_workflow_candidate' for r in rows))
+        rows=self.scan('cat <<EOF; printf done\nnot a command\nEOF\ndocker cp c:/data ./out\n')
+        self.assertEqual([4],[r.source_line for r in rows if r.copyescape_evidence_type=='lexical_workflow_candidate'])
+        for operator in ('>&','<&'):
+            rows=self.scan("printf '%s' ready "+operator+'docker cp c:/data ./out\n')
+            self.assertEqual('unresolved_syntax',rows[0].source_coverage)
+            self.assertEqual('insufficient',rows[0].copyescape_evidence_confidence)
+            self.assertFalse(any(r.copyescape_evidence_type=='lexical_workflow_candidate' for r in rows))
+
+    def test_text_version_control_qualifiers_are_not_truncated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'version.txt'
+            for separator in ('\v','\f','\u0085','\u2028','\u2029'):
+                version='29.7.0'+separator+'-vendor'
+                path.write_text('Server:\n Engine:\n  Version: '+version+'\n',encoding='utf-8')
+                rows=[];c.load_docker_version(path,rows)
+                engine=next(r for r in rows if r.component=='docker-engine')
+                self.assertEqual(version,engine.reported_version)
+                self.assertEqual('unknown',engine.copyescape_status)
+
     def test_partial_syntax_candidate_identity_and_cumulative_work(self):
         rows=self.scan('cat <<< x\nn=$((1<<2))\ndocker cp c1:/a .; docker cp . c2:/b\n')
         candidates=[r for r in rows if r.copyescape_evidence_type=='lexical_workflow_candidate']

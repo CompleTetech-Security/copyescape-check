@@ -362,7 +362,7 @@ def _workflow_lines(text, yaml=False):
                     if not raw.strip() or indent > skipped_scalar:
                         continue
                     skipped_scalar = None
-                scalar = re.match(r"^\s*(?:-\s*)?(?P<key>[^\s:#][^:#]*):\s*[|>][-+]?(?:[ \t]+#.*)?$", raw)
+                scalar = re.match(r"^\s*(?:-\s*)?(?P<key>[^\s:#][^:#]*):\s*[|>](?:[1-9][-+]?|[-+][1-9]?)?(?:[ \t]+#.*)?$", raw)
                 if scalar and scalar["key"].strip() != "run":
                     skipped_scalar = scalar.start("key")
                     continue
@@ -371,7 +371,7 @@ def _workflow_lines(text, yaml=False):
                     continue
                 heredocs = []  # Each YAML run value is an independent script.
                 line = match["value"]
-                if re.fullmatch(r"[|>][-+]?(?:[ \t]+#.*)?", line.strip()):
+                if re.fullmatch(r"[|>](?:[1-9][-+]?|[-+][1-9]?)?(?:[ \t]+#.*)?", line.strip()):
                     block_indent = match.start("key")
                     content_indent = None
                     folded = line.strip().startswith(">")
@@ -448,7 +448,7 @@ def _heredoc_markers(line):
             tabs = tail.startswith("-")
             if tabs: tail = tail[1:]
             try:
-                lexer = shlex.shlex(tail, posix=True, punctuation_chars="()<>")
+                lexer = shlex.shlex(tail, posix=True, punctuation_chars="()<>;&|")
                 lexer.whitespace_split = True
                 lexer.commenters = ""
                 delimiter = next(iter(lexer), "")
@@ -517,6 +517,11 @@ def _shell_walk(line):
         elif char == "`" or line[index:index + 2] == "$(":
             unsupported = True
             word_start = False
+        elif line[index:index+2] in {">&", "<&"}:
+            unsupported = True
+            index += 2
+            word_start = True
+            continue
         elif char in ";&|":
             segments.append(line[first:index])
             width = 2 if line[index:index + 2] in {"&&", "||"} else 1
@@ -546,6 +551,7 @@ def scan_workflow_text(text, relative_path, *, yaml=False):
             row = build_result(relative_path, "source", "docker-cli", "")
             row.source_path, row.source_line = relative_path, number
             row.source_coverage = "unresolved_syntax"
+            row.copyescape_evidence_confidence = "insufficient"
             row.copyescape_evidence_type = "source_coverage"
             row.copyescape_notes.append("Unsupported shell syntax at this logical line was not assessed; no command absence, direction or runtime trust is established.")
             rows.append(row)
@@ -641,7 +647,8 @@ def load_docker_version(path, sink):
                         candidates[component].append(item["Version"])
     else:
         section, subcomponent = None, None
-        for line in text.splitlines():
+        for line in text.split("\n"):
+            line = line.removesuffix("\r")
             match = re.match(r"^(Client|Server):", line)
             if match:
                 section = "docker-cli" if match[1] == "Client" else "docker-engine"
