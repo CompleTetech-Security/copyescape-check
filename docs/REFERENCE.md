@@ -216,7 +216,8 @@ negation, time, wrappers and quoted YAML run scalars remain outside supported ba
 command syntax; no absence inference is made. Here-strings have no following body,
 and arithmetic shifts are not treated as here-documents. `source_candidate` is a
 1-based candidate ordinal within the logical line; it is not an invented column.
-Docker exports carry a stable `source_instance` SHA-256 of the explicitly supplied
-resolved input path to distinguish separate export artifacts without emitting the
-path. This hash is linkable and dictionary-guessable, not anonymous or runtime
-identity. Existing labels/versions remain separate metadata observations.
+Docker exports carry `source_instance`, the SHA-256 of a fixed public namespace
+and the 1-based `--docker-version` input ordinal. It distinguishes exports in one
+run without encoding absolute paths. Preserve argument order for comparisons;
+this identifies an input slot, not an image, host, runtime or anonymous asset.
+Existing labels/versions remain separate metadata observations.

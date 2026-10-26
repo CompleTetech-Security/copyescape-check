@@ -184,3 +184,5 @@ collector or attestation. Every new export input is bounded and protected from
 forced output replacement like the other inputs.
 
 Workflow logical commands are additionally bounded to 64 KiB and 256 physical lines; quoted multiline text and active backslash continuations are tracked without executing shell syntax. Folded YAML scalar bodies remain unresolved rather than being read as separate commands.
+
+Docker export `source_instance` identifies the 1-based `--docker-version` input ordinal, hashed as a fixed public namespace plus that ordinal. It does not encode an absolute path, image, host or runtime identity. Preserve argument order for longitudinal comparisons; reordering exports changes this input identity. Unsupported quoted/folded YAML run scalars and malformed heredoc/arithmetic markers emit explicit unresolved coverage without hiding later direct commands. Operational stderr may include operator input paths from filesystem exceptions; sanitize it separately before sharing.

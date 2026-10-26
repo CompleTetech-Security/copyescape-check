@@ -25,6 +25,25 @@ class WorkflowTests(unittest.TestCase):
     def scan(self, text, yaml=False):
         return c.scan_workflow_text(text, "ci/build.yml" if yaml else "scripts/copy.sh", yaml=yaml)
 
+    def test_unsupported_heredocs_and_yaml_scalars_retain_coverage_and_later_commands(self):
+        for unsupported in ('((cd d; ls) | wc -l)','cat <<'):
+            rows=self.scan('docker cp a:/x ./o\n'+unsupported+'\ndocker cp b:/y ./p\n')
+            self.assertEqual([1,3],[r.source_line for r in rows if r.copyescape_evidence_type=='lexical_workflow_candidate'])
+            self.assertEqual([2],[r.source_line for r in rows if r.source_coverage=='unresolved_syntax'])
+        for scalar in ('>\n    docker cp b:/y ./p','"docker cp b:/y ./p"',"'docker cp b:/y ./p'"):
+            rows=self.scan('- run: docker cp a:/x ./o\n- run: '+scalar+'\n',yaml=True)
+            self.assertEqual([1],[r.source_line for r in rows if r.copyescape_evidence_type=='lexical_workflow_candidate'])
+            self.assertEqual([2],[r.source_line for r in rows if r.source_coverage=='unresolved_syntax'])
+
+    def test_export_identity_is_ordinal_and_independent_of_absolute_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);first=root/'first.json';second=root/'second.json'
+            for path in (first,second):path.write_text('{"Client":{"Version":"29.7.0"}}',encoding='utf-8')
+            a=[];b=[];d=[]
+            c.load_docker_version(first,a,1);c.load_docker_version(second,b,1);c.load_docker_version(second,d,2)
+            self.assertEqual(a[0].source_instance,b[0].source_instance)
+            self.assertNotEqual(a[0].source_instance,d[0].source_instance)
+
     def test_yaml_indicators_heredoc_separators_and_ampersand_redirections(self):
         for indicator in ('|2','|2-','|-2','>2+','>+2'):
             rows=self.scan('env:\n  BODY: '+indicator+'\n    run: docker cp c:/data ./text\n',yaml=True)

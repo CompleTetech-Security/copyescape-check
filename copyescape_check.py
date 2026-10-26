@@ -371,10 +371,15 @@ def _workflow_lines(text, yaml=False):
                     continue
                 heredocs = []  # Each YAML run value is an independent script.
                 line = match["value"]
+                if line.lstrip().startswith(("\"", "'")):
+                    yield number, "$(unsupported_yaml_scalar)"
+                    continue
                 if re.fullmatch(r"[|>](?:[1-9][-+]?|[-+][1-9]?)?(?:[ \t]+#.*)?", line.strip()):
                     block_indent = match.start("key")
                     content_indent = None
                     folded = line.strip().startswith(">")
+                    if folded:
+                        yield number, "$(unsupported_yaml_scalar)"
                     continue
             else:
                 if folded:
@@ -405,7 +410,12 @@ def _workflow_lines(text, yaml=False):
         if quote:
             pending += "\n"
             continue
-        heredocs.extend(_heredoc_markers(pending))
+        markers = _heredoc_markers(pending)
+        if any(delimiter == "\0unsupported" for delimiter,_ in markers):
+            yield first_line, "$(unsupported_heredoc_syntax)"
+            pending = ""
+            continue
+        heredocs.extend(markers)
         if len(heredocs) > 32:
             raise ValueError("Too many here-document delimiters")
         yield first_line, pending
@@ -612,7 +622,7 @@ def load_source(path, root, sink):
     sink.extend(rows)
 
 
-def load_docker_version(path, sink):
+def load_docker_version(path, sink, ordinal=1):
     """Read an existing docker version export. Never invoke Docker or a shell."""
     text = _read_bounded(path, "Docker version export").decode("utf-8-sig")
     candidates = {"docker-cli": [], "docker-engine": []}
@@ -682,7 +692,7 @@ def load_docker_version(path, sink):
             row.reported_version = versions[0].strip(" \t\r\n").removeprefix("v")
         if not versions:
             row.copyescape_notes.append("No supported component Version field was recognized; custom templates or unsupported text remain unknown, not clean.")
-        row.source_instance = hashlib.sha256(os.fsencode(path.resolve())).hexdigest()
+        row.source_instance = hashlib.sha256(("docker-version-export:"+str(ordinal)).encode("ascii")).hexdigest()
         row.copyescape_evidence_type = "docker_version_export"
         row.copyescape_evidence_confidence = "insufficient" if row.copyescape_status == "unknown" else "low"
         row.version_candidates = versions
@@ -1039,8 +1049,8 @@ def main(argv=None) -> int:
                 load_inventory(path, rows)
             for path in args.csv_lists:
                 load_csv(path, rows)
-            for path in args.docker_version:
-                load_docker_version(path, rows)
+            for ordinal,path in enumerate(args.docker_version,1):
+                load_docker_version(path, rows, ordinal)
             for path in args.source:
                 load_source(path, args.source_root, rows)
         except KeyboardInterrupt:
