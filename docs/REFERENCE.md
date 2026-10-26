@@ -116,6 +116,12 @@ needed. It identifies report generation, not acquisition of supplied evidence or
 verification of a deployed patch. Separate runs receive independently captured
 timestamps. The schema and advisory rule date retain their existing meanings.
 
+Completed assessment objects are retained until report-row conversion succeeds.
+An interruption on the first or a later conversion retries conversion once as
+an incomplete report under the same run timestamp and publication protections.
+A second interruption exhausts recovery without replacing an existing report;
+a concurrently created destination is still protected by no-clobber publication.
+
 An existing output file is refused unless `--force` is given. The report is fully rendered (encoding errors such as lone surrogates exit 2 before anything is written), saved to a temporary file, and published atomically: a hard link without `--force`, so a concurrently created file is never replaced, and there is no rename fallback. If the filesystem does not support hard links, the run exits 2; replacement with `--force` uses an atomic rename.
 The output directory must exist. Input files cannot be the output path, even with `--force`.
 

@@ -1068,10 +1068,14 @@ def main(argv=None) -> int:
     except (OSError, ValueError, UnicodeError, RecursionError, csv.Error) as exc:
         print(f"{parser.prog}: error: {exc}", file=sys.stderr)
         return 2
-    records = [asdict(row) for row in rows]
+    records = None
     state = {"published": False, "stdout_started": False, "publication_started": False}
     for attempt in (1, 2):
         try:
+            if records is None:
+                # Keep completed objects until conversion finishes, so an interrupt
+                # can retry them once through the same publication safety gates.
+                records = [asdict(row) for row in rows]
             save_report(args.output, records, force=args.force, format=args.format, brand=args.brand, complete=complete, state=state, generated_at=generated_at)
             break
         except KeyboardInterrupt:
