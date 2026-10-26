@@ -150,7 +150,7 @@ Repeat `--source` for explicitly selected `.sh`, `.bash`, `.yml` or `.yaml` file
 
 **What is recognized.** Plain shell commands and plain/block YAML `run:` values are tokenized for direct `docker cp` and `docker container cp`. Shell continuations and simple command separators are recognized; comments and `echo` arguments are not commands. Non-run YAML block scalars and literal here-document bodies are skipped. Quoted multiline text and active backslash continuations are tracked without executing shell syntax.
 
-**What is reported.** Relative path and line, spelling, direction and limited coverage; source strings and operands are not included. JSON/CSV schema 1.1 adds `source_path`, `source_line`, `source_spelling`, `source_direction` and `source_coverage`, and HTML renders the same evidence notes. `source_candidate` is a 1-based candidate ordinal within the logical line, not an additional column.
+**What is reported.** Relative path and line, spelling, direction and limited coverage; source strings and operands are not included. JSON/CSV schema 1.1 adds `source_path`, `source_line`, `source_spelling`, `source_direction` and `source_coverage`, and HTML renders the same evidence notes. `source_candidate` is the 1-based candidate ordinal within the logical line, retained in JSON and CSV.
 
 **How to read it.**
 
