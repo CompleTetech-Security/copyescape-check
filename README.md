@@ -28,6 +28,10 @@ python copyescape_check.py --csv components.csv --fail-on-finding
 
 There is no installation step. On systems where Python is called `python3`, substitute it. Inputs, fields, output formats, and exit codes are documented in the [reference](docs/REFERENCE.md); run `python copyescape_check.py --help` for usage. Tests: `python -m unittest -v`.
 
+CSV, JSON and HTML retain checker identity and a UTC report-generation timestamp,
+including empty and interrupted reports. Generation time is not evidence-acquisition
+time or deployed-patch attestation; see the reference for metadata and recovery semantics.
+
 ## One exploit, one repository
 
 | Field | Scope |

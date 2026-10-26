@@ -106,6 +106,16 @@ Select with `--format csv|json|html` (default `csv`) and `--output FILE` (defaul
 - **JSON**: an object with `tool`, `tool_version`, `schema_version` (`1.0`), `cve`, `aliases`, `rules_as_of`, `sources`, `generated_at`, `complete`, and `results`.
 - **HTML**: a single self-contained, script-free page (restrictive Content-Security-Policy, no remote assets) with escaped values, summary counts, per-row evidence and limits, and the fix table. `--brand` sets the organization name. See [example-report.html](example-report.html), generated from synthetic data.
 
+Every CSV result and zero-result summary appends `tool` (`copyescape-check`),
+`tool_version`, and `generated_at` after the existing columns. These canonical
+report fields override any similarly named row values and retain CSV formula
+protection. JSON carries the same metadata; HTML shows the same generation time
+and checker/version identity. The CLI captures one timezone-aware UTC ISO 8601
+`generated_at` value per run and retains it if incomplete-report recovery is
+needed. It identifies report generation, not acquisition of supplied evidence or
+verification of a deployed patch. Separate runs receive independently captured
+timestamps. The schema and advisory rule date retain their existing meanings.
+
 An existing output file is refused unless `--force` is given. The report is fully rendered (encoding errors such as lone surrogates exit 2 before anything is written), saved to a temporary file, and published atomically: a hard link without `--force`, so a concurrently created file is never replaced, and there is no rename fallback. If the filesystem does not support hard links, the run exits 2; replacement with `--force` uses an atomic rename.
 The output directory must exist. Input files cannot be the output path, even with `--force`.
 
