@@ -856,7 +856,7 @@ def render_html(rows, *, brand="CompleteTech LLC", generated_at=None, complete=T
     def esc(value):
         return html.escape("" if value is None else str(value), quote=True)
 
-    generated_at = generated_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    generated_at = generated_at or datetime.now(timezone.utc).isoformat()
     rows = sorted(rows, key=lambda row: STATUS_ORDER.get(row.get("copyescape_status"), 1))
     counts = {key: sum(row.get("copyescape_status") == key for row in rows) for key in STATUS_ORDER}
     tiles = [("", len(rows), "Inputs assessed"), ("bad", counts["potentially_affected"], "Potentially affected"),
@@ -908,24 +908,29 @@ A fixed version is a report from vendor sources, not a guarantee. Docker Sandbox
 """
 
 
-def write_report(output, rows, *, format="csv", brand="CompleteTech LLC", complete=True):
+def write_report(output, rows, *, format="csv", brand="CompleteTech LLC", complete=True, generated_at=None):
+    generated_at = generated_at or datetime.now(timezone.utc).isoformat()
+    metadata = {"tool": "copyescape-check", "tool_version": TOOL_VERSION, "generated_at": generated_at}
     if format == "csv":
-        writer = csv.DictWriter(output, fieldnames=[*Result.__dataclass_fields__, "complete", "record_type"], lineterminator="\n", quoting=csv.QUOTE_ALL)
+        writer = csv.DictWriter(output, fieldnames=[*Result.__dataclass_fields__, "complete", "record_type", *metadata], lineterminator="\n", quoting=csv.QUOTE_ALL)
         writer.writeheader()
         for row in rows:
-            writer.writerow({**{key: csv_safe(value) for key, value in row.items()}, "record_type": "result", "complete": "true" if complete else "false"})
+            writer.writerow({**{key: csv_safe(value) for key, value in row.items()},
+                             **{key: csv_safe(value) for key, value in metadata.items()},
+                             "record_type": "result", "complete": "true" if complete else "false"})
         if not rows:
             writer.writerow({"record_type": "summary", "complete": "true" if complete else "false",
                              "schema_version": SCHEMA_VERSION, "copyescape_cve": CVE,
-                             "copyescape_rules_as_of": RULES_DATE, "copyescape_exploitability": "not_tested"})
+                             "copyescape_rules_as_of": RULES_DATE, "copyescape_exploitability": "not_tested",
+                             **{key: csv_safe(value) for key, value in metadata.items()}})
     elif format == "json":
         json.dump({"tool": "copyescape-check", "tool_version": TOOL_VERSION, "schema_version": SCHEMA_VERSION,
                    "cve": CVE, "aliases": list(ALIASES), "rules_as_of": RULES_DATE, "sources": list(TOOL_SOURCES),
-                   "generated_at": datetime.now(timezone.utc).isoformat(), "complete": complete, "results": rows},
+                   "generated_at": generated_at, "complete": complete, "results": rows},
                   output, ensure_ascii=False, indent=2)
         output.write("\n")
     else:
-        output.write(render_html(rows, brand=brand, complete=complete))
+        output.write(render_html(rows, brand=brand, complete=complete, generated_at=generated_at))
 
 
 def save_report(path, rows, *, force=False, state=None, **options):
@@ -1009,6 +1014,7 @@ def main(argv=None) -> int:
     parser.add_argument("--fail-on-finding", action="store_true", help="Exit 1 when a result is potentially_affected (errors still exit 2)")
     parser.add_argument("--tool-version", action="version", version=f"copyescape-check {TOOL_VERSION}")
     args = parser.parse_args(argv)
+    generated_at = datetime.now(timezone.utc).isoformat()
     rows = []
     complete = True
 
@@ -1062,11 +1068,15 @@ def main(argv=None) -> int:
     except (OSError, ValueError, UnicodeError, RecursionError, csv.Error) as exc:
         print(f"{parser.prog}: error: {exc}", file=sys.stderr)
         return 2
-    records = [asdict(row) for row in rows]
+    records = None
     state = {"published": False, "stdout_started": False, "publication_started": False}
     for attempt in (1, 2):
         try:
-            save_report(args.output, records, force=args.force, format=args.format, brand=args.brand, complete=complete, state=state)
+            if records is None:
+                # Keep completed objects until conversion finishes, so an interrupt
+                # can retry them once through the same publication safety gates.
+                records = [asdict(row) for row in rows]
+            save_report(args.output, records, force=args.force, format=args.format, brand=args.brand, complete=complete, state=state, generated_at=generated_at)
             break
         except KeyboardInterrupt:
             if state["published"]:
