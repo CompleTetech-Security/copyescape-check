@@ -208,3 +208,15 @@ Workflow logical commands are additionally bounded to 64 KiB and 256 physical li
 Non-run YAML block scalars and literal here-document bodies are skipped.
 Here-strings and unusual redirect delimiters remain unresolved; candidate absence
 is never evidence that the workflow is unaffected.
+
+Logical-line walks share a 16-MiB cumulative character-work bound per source
+file. Unsupported substitutions emit unresolved coverage observations even when
+other candidates exist. Shell reserved-word prefixes, environment assignments,
+negation, time, wrappers and quoted YAML run scalars remain outside supported bare
+command syntax; no absence inference is made. Here-strings have no following body,
+and arithmetic shifts are not treated as here-documents. `source_candidate` is a
+1-based candidate ordinal within the logical line; it is not an invented column.
+Docker exports carry a stable `source_instance` SHA-256 of the explicitly supplied
+resolved input path to distinguish separate export artifacts without emitting the
+path. This hash is linkable and dictionary-guessable, not anonymous or runtime
+identity. Existing labels/versions remain separate metadata observations.

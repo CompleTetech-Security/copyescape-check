@@ -10,6 +10,7 @@ import csv
 import html
 import io
 import json
+import hashlib
 import os
 import re
 import shlex
@@ -22,6 +23,7 @@ from pathlib import Path
 
 TOOL_VERSION = "1.1.0"
 SCHEMA_VERSION = "1.1"
+MAX_WORKFLOW_WALK = 16 * 1024**2
 MAX_INPUT = 1024 * 1024
 MAX_INPUTS = 10000
 MAX_FIELD = 512
@@ -281,6 +283,8 @@ class Result:
     source_direction: str = "unknown"
     source_coverage: str = ""
     version_candidates: list = field(default_factory=list)
+    source_candidate: int = 0
+    source_instance: str = ""
 
 
 def build_result(label, source, component, version, build_source="unknown", platform="", architecture="", **observed) -> Result:
@@ -341,6 +345,7 @@ def _workflow_lines(text, yaml=False):
     physical_lines = 0
     skipped_scalar = None
     heredocs = []
+    walk_budget = 0
     for number, raw in enumerate(text.splitlines(), 1):
         if len(raw)>65536:
             raise ValueError("Workflow physical line limit exceeded")
@@ -390,6 +395,9 @@ def _workflow_lines(text, yaml=False):
         pending += line
         if len(pending) > 65536 or physical_lines > 256:
             raise ValueError("Workflow logical command limit exceeded")
+        walk_budget += len(pending)
+        if walk_budget > MAX_WORKFLOW_WALK:
+            raise ValueError("Workflow lexical work limit exceeded")
         _, continuation, quote, _ = _shell_walk(pending)
         if continuation:
             pending = pending[:-1]
@@ -425,9 +433,15 @@ def _heredoc_markers(line):
             quote = char
         elif char == "#" and word_start:
             break
+        elif line[index:index+3] == "$((" or line[index:index+2] == "((":
+            end = line.find("))", index+2)
+            if end < 0:
+                markers.append(("\0unsupported",False))
+                break
+            index = end+2
+            continue
         elif line[index:index+2] == "<<":
             if line[index:index+3] == "<<<":
-                markers.append(("\0unsupported", False))
                 index += 3
                 continue
             tail = line[index+2:]
@@ -526,7 +540,18 @@ def scan_workflow_text(text, relative_path, *, yaml=False):
     rows = []
     for number, line in _workflow_lines(text, yaml):
         token_count = 0
-        for segment in _shell_segments(line):
+        ordinal = 0
+        segments = _shell_segments(line)
+        if not segments and line.strip():
+            row = build_result(relative_path, "source", "docker-cli", "")
+            row.source_path, row.source_line = relative_path, number
+            row.source_coverage = "unresolved_syntax"
+            row.copyescape_evidence_type = "source_coverage"
+            row.copyescape_notes.append("Unsupported shell syntax at this logical line was not assessed; no command absence, direction or runtime trust is established.")
+            rows.append(row)
+            if len(rows)>MAX_INPUTS:
+                raise ValueError("Too many workflow observations")
+        for segment in segments:
             lexer = shlex.shlex(segment, posix=True, punctuation_chars="()<>")
             lexer.whitespace_split = True
             lexer.commenters = ""
@@ -547,6 +572,8 @@ def scan_workflow_text(text, relative_path, *, yaml=False):
             direction = _copy_direction(command[offset:])
             row = build_result(relative_path, "source", "docker-cli", "")
             row.source_path, row.source_line = relative_path, number
+            ordinal += 1
+            row.source_candidate = ordinal
             row.source_spelling, row.source_direction = spelling, direction
             row.source_coverage = "limited_lexical"
             row.copyescape_evidence_type = "lexical_workflow_candidate"
@@ -648,6 +675,7 @@ def load_docker_version(path, sink):
             row.reported_version = versions[0].strip(" \t\r\n").removeprefix("v")
         if not versions:
             row.copyescape_notes.append("No supported component Version field was recognized; custom templates or unsupported text remain unknown, not clean.")
+        row.source_instance = hashlib.sha256(os.fsencode(path.resolve())).hexdigest()
         row.copyescape_evidence_type = "docker_version_export"
         row.copyescape_evidence_confidence = "insufficient" if row.copyescape_status == "unknown" else "low"
         row.version_candidates = versions

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from unittest.mock import patch
 
 import copyescape_check as c
@@ -24,6 +25,15 @@ class WorkflowTests(unittest.TestCase):
     def scan(self, text, yaml=False):
         return c.scan_workflow_text(text, "ci/build.yml" if yaml else "scripts/copy.sh", yaml=yaml)
 
+    def test_partial_syntax_candidate_identity_and_cumulative_work(self):
+        rows=self.scan('cat <<< x\nn=$((1<<2))\ndocker cp c1:/a .; docker cp . c2:/b\n')
+        candidates=[r for r in rows if r.copyescape_evidence_type=='lexical_workflow_candidate']
+        self.assertEqual([3,3],[r.source_line for r in candidates])
+        self.assertEqual([1,2],[r.source_candidate for r in candidates])
+        self.assertTrue(any(r.source_coverage=='unresolved_syntax' for r in rows))
+        with mock.patch.object(c,'MAX_WORKFLOW_WALK',100):
+            with self.assertRaises(ValueError):self.scan(('a \\\n'*20)+'a\n')
+
     def test_literal_yaml_scalars_and_heredoc_bodies_are_not_commands(self):
         for source in ("description: |\n  run: docker cp container:/data ./out\n", "env:\n  BODY: >\n    run: docker cp container:/data ./out\n"):
             self.assertEqual("source_coverage", self.scan(source, yaml=True)[0].copyescape_evidence_type)
@@ -36,7 +46,8 @@ class WorkflowTests(unittest.TestCase):
             source = "steps:\n  - run: |\n      " + unresolved + "\n  - run: docker cp container:/data ./out\n"
             self.assertEqual([4], [row.source_line for row in self.scan(source, yaml=True)])
         rows = self.scan('cat <<EOF "$(printf example)"\ndocker cp container:/data ./out\nEOF\ndocker cp ./in container:/out\n')
-        self.assertEqual([4], [row.source_line for row in rows])
+        self.assertEqual([4], [row.source_line for row in rows if row.copyescape_evidence_type=='lexical_workflow_candidate'])
+        self.assertEqual('unresolved_syntax',rows[0].source_coverage)
         self.assertEqual("source_coverage", self.scan(" "*16384,yaml=True)[0].copyescape_evidence_type)
         for marker in ("EOF", "'EOF'", '"EOF"'):
             rows = self.scan("cat <<" + marker + "\ndocker cp container:/data ./out\nEOF\ndocker cp ./in container:/out\n")
