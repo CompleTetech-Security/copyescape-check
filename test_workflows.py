@@ -1,0 +1,299 @@
+"""Synthetic shell/YAML candidate fixtures; no Docker invocation."""
+import contextlib
+import csv
+from dataclasses import asdict
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+from unittest.mock import patch
+
+import copyescape_check as c
+
+
+class WorkflowTests(unittest.TestCase):
+    def cli(self, *args):
+        with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+            result = c.main(list(args))
+        return result, out.getvalue(), err.getvalue()
+
+    def scan(self, text, yaml=False):
+        return c.scan_workflow_text(text, "ci/build.yml" if yaml else "scripts/copy.sh", yaml=yaml)
+
+    def test_unsupported_heredocs_and_yaml_scalars_retain_coverage_and_later_commands(self):
+        for unsupported in ('((cd d; ls) | wc -l)','cat <<'):
+            rows=self.scan('docker cp a:/x ./o\n'+unsupported+'\ndocker cp b:/y ./p\n')
+            self.assertEqual([1,3],[r.source_line for r in rows if r.copyescape_evidence_type=='lexical_workflow_candidate'])
+            self.assertEqual([2],[r.source_line for r in rows if r.source_coverage=='unresolved_syntax'])
+        for scalar in ('>\n    docker cp b:/y ./p','"docker cp b:/y ./p"',"'docker cp b:/y ./p'"):
+            rows=self.scan('- run: docker cp a:/x ./o\n- run: '+scalar+'\n',yaml=True)
+            self.assertEqual([1],[r.source_line for r in rows if r.copyescape_evidence_type=='lexical_workflow_candidate'])
+            self.assertEqual([2],[r.source_line for r in rows if r.source_coverage=='unresolved_syntax'])
+
+    def test_export_identity_is_ordinal_and_independent_of_absolute_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);first=root/'first.json';second=root/'second.json'
+            for path in (first,second):path.write_text('{"Client":{"Version":"29.7.0"}}',encoding='utf-8')
+            a=[];b=[];d=[]
+            c.load_docker_version(first,a,1);c.load_docker_version(second,b,1);c.load_docker_version(second,d,2)
+            self.assertEqual(a[0].source_instance,b[0].source_instance)
+            self.assertNotEqual(a[0].source_instance,d[0].source_instance)
+
+    def test_yaml_indicators_heredoc_separators_and_ampersand_redirections(self):
+        for indicator in ('|2','|2-','|-2','>2+','>+2'):
+            rows=self.scan('env:\n  BODY: '+indicator+'\n    run: docker cp c:/data ./text\n',yaml=True)
+            self.assertFalse(any(r.copyescape_evidence_type=='lexical_workflow_candidate' for r in rows))
+        rows=self.scan('cat <<EOF; printf done\nnot a command\nEOF\ndocker cp c:/data ./out\n')
+        self.assertEqual([4],[r.source_line for r in rows if r.copyescape_evidence_type=='lexical_workflow_candidate'])
+        for operator in ('>&','<&'):
+            rows=self.scan("printf '%s' ready "+operator+'docker cp c:/data ./out\n')
+            self.assertEqual('unresolved_syntax',rows[0].source_coverage)
+            self.assertEqual('insufficient',rows[0].copyescape_evidence_confidence)
+            self.assertFalse(any(r.copyescape_evidence_type=='lexical_workflow_candidate' for r in rows))
+
+    def test_text_version_control_qualifiers_are_not_truncated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'version.txt'
+            for separator in ('\v','\f','\u0085','\u2028','\u2029'):
+                version='29.7.0'+separator+'-vendor'
+                path.write_text('Server:\n Engine:\n  Version: '+version+'\n',encoding='utf-8')
+                rows=[];c.load_docker_version(path,rows)
+                engine=next(r for r in rows if r.component=='docker-engine')
+                self.assertEqual(version,engine.reported_version)
+                self.assertEqual('unknown',engine.copyescape_status)
+
+    def test_partial_syntax_candidate_identity_and_cumulative_work(self):
+        rows=self.scan('cat <<< x\nn=$((1<<2))\ndocker cp c1:/a .; docker cp . c2:/b\n')
+        candidates=[r for r in rows if r.copyescape_evidence_type=='lexical_workflow_candidate']
+        self.assertEqual([3,3],[r.source_line for r in candidates])
+        self.assertEqual([1,2],[r.source_candidate for r in candidates])
+        self.assertTrue(any(r.source_coverage=='unresolved_syntax' for r in rows))
+        with mock.patch.object(c,'MAX_WORKFLOW_WALK',100):
+            with self.assertRaises(ValueError):self.scan(('a \\\n'*20)+'a\n')
+
+    def test_literal_yaml_scalars_and_heredoc_bodies_are_not_commands(self):
+        for source in ("description: |\n  run: docker cp container:/data ./out\n", "env:\n  BODY: >\n    run: docker cp container:/data ./out\n"):
+            self.assertEqual("source_coverage", self.scan(source, yaml=True)[0].copyescape_evidence_type)
+        for literal in ("'<<'", '"<<"', r"\<\<"):
+            rows = self.scan("printf %s " + literal + "\ndocker cp container:/data ./out\n")
+            self.assertEqual([2], [row.source_line for row in rows])
+        escaped = self.scan("cat release\\ #1 <<EOF\ndocker cp container:/data ./out\nEOF\ndocker cp ./in container:/out\n")
+        self.assertEqual([4], [row.source_line for row in escaped])
+        for unresolved in ('cat <<<"hello"', 'cat <<EOF'):
+            source = "steps:\n  - run: |\n      " + unresolved + "\n  - run: docker cp container:/data ./out\n"
+            self.assertEqual([4], [row.source_line for row in self.scan(source, yaml=True)])
+        rows = self.scan('cat <<EOF "$(printf example)"\ndocker cp container:/data ./out\nEOF\ndocker cp ./in container:/out\n')
+        self.assertEqual([4], [row.source_line for row in rows if row.copyescape_evidence_type=='lexical_workflow_candidate'])
+        self.assertEqual('unresolved_syntax',rows[0].source_coverage)
+        self.assertEqual("source_coverage", self.scan(" "*16384,yaml=True)[0].copyescape_evidence_type)
+        for marker in ("EOF", "'EOF'", '"EOF"'):
+            rows = self.scan("cat <<" + marker + "\ndocker cp container:/data ./out\nEOF\ndocker cp ./in container:/out\n")
+            self.assertEqual([4], [row.source_line for row in rows])
+            self.assertEqual("host_to_container_candidate", rows[0].source_direction)
+
+    def test_spellings_and_copy_directions_without_runtime_preconditions(self):
+        for command, direction in [
+            ("docker cp container:/data ./out", "container_to_host_candidate"),
+            ("docker container cp ./input container:/data", "host_to_container_candidate"),
+            ("docker cp -a -L container:/data ./out", "container_to_host_candidate"),
+            ("docker cp --quiet container:/data ./out", "container_to_host_candidate"),
+            ("docker cp container:/data -", "stream_candidate"),
+            ("docker cp - container:/data", "stream_candidate"),
+            ("docker cp '$CONTAINER:/data' ./out", "unknown"),
+            ("docker cp container:/data $DEST", "unknown"),
+            ("docker cp --future-flag container:/data ./out", "unknown"),
+            ("docker cp c:/data d:/data", "unknown"),
+        ]:
+            with self.subTest(command=command):
+                row = self.scan(command)[0]
+                self.assertEqual(direction, row.source_direction)
+                self.assertEqual("unknown", row.copyescape_status)
+                self.assertEqual("not_tested", row.copyescape_exploitability)
+                self.assertEqual("unknown", row.copy_or_extract_path_used)
+                self.assertEqual("unknown", row.untrusted_archive_or_container)
+
+    def test_comments_echo_wrappers_and_aliases_do_not_prove_invocation(self):
+        for source in ["# docker cp container:/data ./out", "echo 'docker cp container:/data ./out'", "echo ';' docker cp container:/data ./out", "echo \\; docker cp container:/data ./out", "sudo docker cp container:/data ./out", "dcp container:/data ./out", "docker --context prod cp container:/data ./out"]:
+            with self.subTest(source=source):
+                row = self.scan(source)[0]
+                self.assertEqual("source_coverage", row.copyescape_evidence_type)
+                self.assertEqual("unknown", row.source_direction)
+        self.assertEqual("container_to_host_candidate", self.scan("docker cp container:/data ';'")[0].source_direction)
+        for prefix in ["echo release#1", "echo ''#1", "echo release\\ #1"]:
+            self.assertEqual("docker cp", self.scan(prefix + " && docker cp container:/data ./out")[0].source_spelling)
+        self.assertEqual("source_coverage", self.scan("echo release # comment; docker cp container:/data ./out")[0].copyescape_evidence_type)
+
+    def test_shell_sequences_and_line_continuations_have_relative_locations(self):
+        rows = self.scan("echo ready && docker cp c:/data ./out\n\ndocker container \\\ncp ./input ctr:/data\n")
+        self.assertEqual([1, 3], [r.source_line for r in rows])
+        self.assertEqual(["docker cp", "docker container cp"], [r.source_spelling for r in rows])
+        self.assertEqual("host_to_container_candidate", rows[1].source_direction)
+        self.assertEqual("docker cp", self.scan("# comment \\\ndocker cp container:/data ./out\n")[0].source_spelling)
+        self.assertEqual("docker container cp", self.scan("docker con\\\ntainer cp container:/data ./out\n")[0].source_spelling)
+        self.assertEqual("source_coverage", self.scan("echo 'text\ndocker cp container:/data ./out\n'\n")[0].copyescape_evidence_type)
+        self.assertEqual("docker cp", self.scan("docker cp container:/data ./out # $(not-executed)")[0].source_spelling)
+        self.assertEqual("docker cp", self.scan("echo '$(not-executed)' && docker cp container:/data ./out")[0].source_spelling)
+        with self.assertRaises(ValueError):
+            self.scan("echo '" + "\nx" * 300)
+
+    def test_yaml_run_plain_and_block_only_without_parsing_other_keys(self):
+        source = """steps:
+  - name: docker cp should not be a command
+    env:
+      NOTE: docker cp container:/secret ./out
+    run: |
+      # docker cp container:/comment ./out
+      docker cp container:/data ./out
+  - run: docker container cp ./input container:/data
+  - name: done
+    description: docker cp container:/text ./out
+"""
+        rows = self.scan(source, yaml=True)
+        self.assertEqual(2, len(rows))
+        self.assertEqual([7, 8], [r.source_line for r in rows])
+        self.assertEqual(["container_to_host_candidate", "host_to_container_candidate"], [r.source_direction for r in rows])
+        source = """steps:
+  - run: |
+      echo hello
+    env:
+      NOTE: |
+        docker cp container:/not-a-command ./out
+"""
+        self.assertEqual("source_coverage", self.scan(source, yaml=True)[0].copyescape_evidence_type)
+        self.assertEqual("docker cp", self.scan("steps:\n  - run: | # copy output\n      docker cp container:/data ./out\n", yaml=True)[0].source_spelling)
+
+    def test_no_source_contents_or_operands_in_report(self):
+        row = self.scan("docker cp SECRET-CONTAINER:/PRIVATE-FILE ./PRIVATE-OUTPUT")[0]
+        data = json.dumps(asdict(row))
+        for secret in ["SECRET-CONTAINER", "PRIVATE-FILE", "PRIVATE-OUTPUT"]:
+            self.assertNotIn(secret, data)
+
+    def test_client_engine_desktop_versions_do_not_clear_each_other(self):
+        args = ["--version", "docker-client=29.6.2", "--version", "docker-engine=29.7.0", "--version", "docker-desktop=4.86.0", "--format", "json"]
+        code, out, _ = self.cli(*args)
+        self.assertEqual(0, code)
+        rows = json.loads(out)["results"]
+        self.assertEqual(["docker-cli", "docker-engine", "docker-desktop"], [r["component"] for r in rows])
+        self.assertEqual(["potentially_affected", "fixed_version_reported", "fixed_version_reported"], [r["copyescape_status"] for r in rows])
+
+    def test_docker_version_exports_keep_engine_client_and_runtime_components_separate(self):
+        fixtures = [
+            json.dumps({"Client": {"Version": "29.6.2", "Context": "PRIVATE-CONTEXT"}, "Server": {"Version": "29.7.0", "Components": [{"Name": "Engine", "Version": "29.7.0"}, {"Name": "containerd", "Version": "9.9.9"}]}}),
+            "Client: Docker Engine - Community\n Version: 29.6.2\n Context: PRIVATE-CONTEXT\nServer: Docker Desktop 4.86.0\n Engine:\n  Version: 29.7.0\n containerd:\n  Version: 9.9.9\n runc:\n  Version: 1.0.0\n",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "version.txt"
+            for fixture in fixtures:
+                path.write_text(fixture, encoding="utf-8")
+                code, out, _ = self.cli("--docker-version", str(path), "--format", "json")
+                self.assertEqual(0, code)
+                rows = json.loads(out)["results"]
+                self.assertEqual(["docker-cli", "docker-engine"], [r["component"] for r in rows])
+                self.assertEqual(["29.6.2", "29.7.0"], [r["reported_version"] for r in rows])
+                self.assertEqual(["potentially_affected", "fixed_version_reported"], [r["copyescape_status"] for r in rows])
+                for private in ["PRIVATE-CONTEXT", "9.9.9", "4.86.0", directory]:
+                    self.assertNotIn(private, out)
+
+    def test_export_conflicts_missing_server_and_invalid_json_keep_uncertainty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "version.json"
+            path.write_text(json.dumps({"Client": {"Version": "29.7.0"}, "Server": {"Version": "29.7.0", "Components": [{"Name": "Engine", "Version": "29.6.2"}]}}), encoding="utf-8")
+            code, out, _ = self.cli("--docker-version", str(path), "--format", "json")
+            row = json.loads(out)["results"][1]
+            self.assertEqual("unknown", row["copyescape_status"])
+            self.assertEqual(["29.6.2", "29.7.0"], row["version_candidates"])
+            self.assertEqual("", row["reported_version"])
+            path.write_text('{"Client":{"Version":"29.7.0"},"Server":null}', encoding="utf-8")
+            _, out, _ = self.cli("--docker-version", str(path), "--format", "json")
+            self.assertEqual("unknown", json.loads(out)["results"][1]["copyescape_status"])
+            for text in ['{"Client":{"Version":true}}', '{"Client":{},"Client":{}}', '{"Client":{},"x":NaN}']:
+                path.write_text(text, encoding="utf-8")
+                code, out, _ = self.cli("--docker-version", str(path), "--format", "json")
+                self.assertEqual((2, ""), (code, out))
+            self.assertEqual(2, self.cli("--docker-version", str(path), "--output", str(path), "--force")[0])
+
+    def test_export_qualified_blank_and_unrecognized_fields_cannot_clear(self):
+        cases = [
+            '{"Server":{"Version":"","Components":[{"Name":"Engine","Version":"29.7.0"}]}}',
+            '{"Server":{"Version":"  ","Components":[{"Name":"Engine","Version":"29.7.0"}]}}',
+            json.dumps({"Server": {"Version": "\f", "Components": [{"Name": "Engine", "Version": "29.7.0"}]}}),
+            'Server:\n Version: 29.7.0\n Engine:\n  Version: 29.6.2 (vendor)\n',
+            'Server:\n Version: 29.7.0\nServer:\n Version: 29.6.2\n',
+            'Server:\n Version: \n Engine:\n  Version: 29.7.0\n',
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "version.txt"
+            for text in cases:
+                path.write_text(text, encoding="utf-8")
+                code, out, _ = self.cli("--docker-version", str(path), "--format", "json")
+                self.assertEqual(0, code)
+                row = json.loads(out)["results"][1]
+                self.assertEqual("unknown", row["copyescape_status"])
+                self.assertEqual("", row["reported_version"])
+                self.assertNotIn("No version-based action", row["copyescape_recommendation"])
+                _, html, _ = self.cli("--docker-version", str(path), "--format", "html")
+                self.assertIn("Export version candidates", html)
+                self.assertTrue("29.7.0" in html or "29.6.2" in html)
+            path.write_text("29.7.0\n", encoding="utf-8")
+            _, out, _ = self.cli("--docker-version", str(path), "--format", "json")
+            self.assertTrue(all("No supported component Version" in " ".join(r["copyescape_notes"]) for r in json.loads(out)["results"]))
+            path.write_text("Client:\n Version: 29.7.0\n plugin:\n  Version: 99.0.0\n", encoding="utf-8")
+            _, out, _ = self.cli("--docker-version", str(path), "--format", "json")
+            self.assertEqual(["29.7.0"], json.loads(out)["results"][0]["version_candidates"])
+            for version in ["vv29.7.0", "v 29.7.0"]:
+                path.write_text(json.dumps({"Client": {"Version": version}}), encoding="utf-8")
+                _, out, _ = self.cli("--docker-version", str(path), "--format", "json")
+                self.assertEqual("unknown", json.loads(out)["results"][0]["copyescape_status"])
+            path.write_text('{"Server":{"Version":"v29.7.0","Components":[{"Name":"Engine","Version":"29.7.0"}]}}', encoding="utf-8")
+            _, out, _ = self.cli("--docker-version", str(path), "--format", "json")
+            row = json.loads(out)["results"][1]
+            self.assertEqual(("fixed_version_reported", "29.7.0"), (row["copyescape_status"], row["reported_version"]))
+
+    def test_explicit_source_root_output_protection_and_standalone_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "copy.sh"
+            source = "docker cp container:/data ./out\n"
+            path.write_text(source, encoding="utf-8")
+            args = ["--source", str(path), "--source-root", directory]
+            self.assertEqual(2, self.cli("--source", str(path))[0])
+            self.assertEqual(2, self.cli(*args, "--output", str(path), "--force")[0])
+            alias = root / "alias.sh"
+            os.link(path, alias)
+            self.assertEqual(2, self.cli(*args, "--output", str(alias), "--force")[0])
+            self.assertEqual(source, path.read_text(encoding="utf-8"))
+            code, out, _ = self.cli(*args, "--format", "json")
+            self.assertEqual(0, code)
+            self.assertNotIn(directory, out)
+            self.assertEqual("copy.sh", json.loads(out)["results"][0]["source_path"])
+            _, out, _ = self.cli(*args, "--format", "csv")
+            self.assertEqual("container_to_host_candidate", list(csv.DictReader(io.StringIO(out)))[0]["source_direction"])
+            _, out, _ = self.cli(*args, "--format", "html")
+            self.assertIn("copy.sh:1", out)
+            checker = root / "checker.py"
+            checker.write_bytes(Path(c.__file__).read_bytes())
+            process = subprocess.run([sys.executable, str(checker), *args, "--format", "json"], capture_output=True, text=True, check=True)
+            self.assertEqual("docker cp", json.loads(process.stdout)["results"][0]["source_spelling"])
+
+    def test_bounds_regular_files_and_no_docker_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "copy.sh"
+            path.write_text("docker cp container:/data ./out", encoding="utf-8")
+            with patch.object(subprocess, "run", side_effect=AssertionError("no execution")):
+                self.assertEqual(0, self.cli("--source", str(path), "--source-root", directory)[0])
+            path.write_bytes(b" " * (c.MAX_INPUT + 1))
+            self.assertEqual(2, self.cli("--source", str(path), "--source-root", directory)[0])
+            if hasattr(os, "mkfifo"):
+                fifo = root / "pipe.sh"
+                os.mkfifo(fifo)
+                self.assertEqual(2, self.cli("--source", str(fifo), "--source-root", directory)[0])
+
+
+if __name__ == "__main__":
+    unittest.main()

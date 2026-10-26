@@ -10,16 +10,20 @@ import csv
 import html
 import io
 import json
+import hashlib
 import os
 import re
+import shlex
+import stat
 import sys
 import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-TOOL_VERSION = "1.0.0"
-SCHEMA_VERSION = "1.0"
+TOOL_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.1"
+MAX_WORKFLOW_WALK = 16 * 1024**2
 MAX_INPUT = 1024 * 1024
 MAX_INPUTS = 10000
 MAX_FIELD = 512
@@ -97,8 +101,9 @@ COMPONENTS = {
         ),
     },
 }
+COMPONENTS["docker-cli"] = {**COMPONENTS["docker-engine"], "label": "Docker CLI"}
 COMPONENT_ALIASES = {
-    "docker-engine": "docker-engine", "engine": "docker-engine", "docker-cli": "docker-engine",
+    "docker-engine": "docker-engine", "engine": "docker-engine", "docker-cli": "docker-cli", "docker-client": "docker-cli",
     "docker-engine-cli": "docker-engine", "docker-desktop": "docker-desktop", "desktop": "docker-desktop",
     "go-archive": "go-archive", "moby-go-archive": "go-archive",
 }
@@ -272,6 +277,14 @@ class Result:
     copyescape_notes: list = field(default_factory=list)
     copyescape_recommendation: str = ""
     status: str = "offline"
+    source_path: str = ""
+    source_line: int = 0
+    source_spelling: str = ""
+    source_direction: str = "unknown"
+    source_coverage: str = ""
+    version_candidates: list = field(default_factory=list)
+    source_candidate: int = 0
+    source_instance: str = ""
 
 
 def build_result(label, source, component, version, build_source="unknown", platform="", architecture="", **observed) -> Result:
@@ -316,11 +329,377 @@ def inventory_result(record, fallback_label="component", source="inventory") -> 
 
 
 def _read_bounded(path: Path, what: str) -> bytes:
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise ValueError(f"{what} must be a regular file")
     with Path(path).open("rb") as stream:
         raw = stream.read(MAX_INPUT + 1)
     if len(raw) > MAX_INPUT:
         raise ValueError(f"{what} exceeds the 1 MiB limit")
     return raw
+
+
+def _workflow_lines(text, yaml=False):
+    """Plain shell lines or plain/block YAML run values, never a YAML evaluator."""
+    block_indent, content_indent, folded = None, None, False
+    pending, first_line = "", 0
+    physical_lines = 0
+    skipped_scalar = None
+    heredocs = []
+    walk_budget = 0
+    for number, raw in enumerate(text.splitlines(), 1):
+        if len(raw)>65536:
+            raise ValueError("Workflow physical line limit exceeded")
+        line = raw
+        if yaml:
+            indent = len(raw) - len(raw.lstrip())
+            if block_indent is not None and raw.strip() and indent <= block_indent:
+                if pending:
+                    yield first_line, pending
+                    pending = ""
+                block_indent, content_indent, folded = None, None, False
+            if block_indent is None:
+                if skipped_scalar is not None:
+                    if not raw.strip() or indent > skipped_scalar:
+                        continue
+                    skipped_scalar = None
+                scalar = re.match(r"^\s*(?:-\s*)?(?P<key>[^\s:#][^:#]*):\s*[|>](?:[1-9][-+]?|[-+][1-9]?)?(?:[ \t]+#.*)?$", raw)
+                if scalar and scalar["key"].strip() != "run":
+                    skipped_scalar = scalar.start("key")
+                    continue
+                match = re.match(r"^\s*(?:-\s*)?(?P<key>run):\s*(?P<value>.*)$", raw)
+                if not match:
+                    continue
+                heredocs = []  # Each YAML run value is an independent script.
+                line = match["value"]
+                if line.lstrip().startswith(("\"", "'")):
+                    yield number, "$(unsupported_yaml_scalar)"
+                    continue
+                if re.fullmatch(r"[|>](?:[1-9][-+]?|[-+][1-9]?)?(?:[ \t]+#.*)?", line.strip()):
+                    block_indent = match.start("key")
+                    content_indent = None
+                    folded = line.strip().startswith(">")
+                    if folded:
+                        yield number, "$(unsupported_yaml_scalar)"
+                    continue
+            else:
+                if folded:
+                    continue  # Folded-scalar shell semantics remain unsupported.
+                if raw.strip() and content_indent is None:
+                    content_indent = indent
+                line = raw[content_indent:] if content_indent is not None else ""
+            # No YAML expression evaluation, anchors, includes or shell execution.
+        if heredocs:
+            delimiter, tabs = heredocs[0]
+            if (line.lstrip("\t") if tabs else line) == delimiter:
+                heredocs.pop(0)
+            continue
+        if not pending:
+            first_line = number
+            physical_lines = 0
+        physical_lines += 1
+        pending += line
+        if len(pending) > 65536 or physical_lines > 256:
+            raise ValueError("Workflow logical command limit exceeded")
+        walk_budget += len(pending)
+        if walk_budget > MAX_WORKFLOW_WALK:
+            raise ValueError("Workflow lexical work limit exceeded")
+        _, continuation, quote, _ = _shell_walk(pending)
+        if continuation:
+            pending = pending[:-1]
+            continue
+        if quote:
+            pending += "\n"
+            continue
+        markers = _heredoc_markers(pending)
+        if any(delimiter == "\0unsupported" for delimiter,_ in markers):
+            yield first_line, "$(unsupported_heredoc_syntax)"
+            pending = ""
+            continue
+        heredocs.extend(markers)
+        if len(heredocs) > 32:
+            raise ValueError("Too many here-document delimiters")
+        yield first_line, pending
+        pending = ""
+    if pending:
+        yield first_line, pending
+
+
+def _heredoc_markers(line):
+    """Recognize active redirection operators before shlex removes quoting."""
+    quote, escaped, index, word_start = None, False, 0, True
+    markers = []
+    while index < len(line):
+        char = line[index]
+        if escaped:
+            escaped = False
+            word_start = False
+            index += 1
+            continue
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote: quote = None
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == "#" and word_start:
+            break
+        elif line[index:index+3] == "$((" or line[index:index+2] == "((":
+            end = line.find("))", index+2)
+            if end < 0:
+                markers.append(("\0unsupported",False))
+                break
+            index = end+2
+            continue
+        elif line[index:index+2] == "<<":
+            if line[index:index+3] == "<<<":
+                index += 3
+                continue
+            tail = line[index+2:]
+            tabs = tail.startswith("-")
+            if tabs: tail = tail[1:]
+            try:
+                lexer = shlex.shlex(tail, posix=True, punctuation_chars="()<>;&|")
+                lexer.whitespace_split = True
+                lexer.commenters = ""
+                delimiter = next(iter(lexer), "")
+            except ValueError:
+                delimiter = ""
+            if not delimiter:
+                markers.append(("\0unsupported", False))
+            else:
+                markers.append((delimiter, tabs))
+            index += 2
+            continue
+        word_start = char.isspace() or char in "()<>;&|"
+        index += 1
+    return markers
+
+
+def _copy_direction(arguments):
+    operands, options = [], True
+    for arg in arguments:
+        if options and arg == "--":
+            options = False
+        elif options and arg.startswith("-") and arg != "-":
+            if arg not in {"-a", "--archive", "-L", "--follow-link", "-aL", "-La", "-q", "--quiet"}:
+                return "unknown"
+        else:
+            operands.append(arg)
+    if len(operands) != 2 or any(any(c in arg for c in "$`%{}") for arg in operands):
+        return "unknown"
+    if "-" in operands:
+        return "stream_candidate"
+    def container(arg):
+        if re.match(r"^[A-Za-z]:[\\/]", arg):
+            return False
+        return bool(re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]*:", arg))
+    source, destination = map(container, operands)
+    if source and not destination:
+        return "container_to_host_candidate"
+    if destination and not source:
+        return "host_to_container_candidate"
+    return "unknown"
+
+
+def _shell_walk(line):
+    """Shared quote/comment/escape walk for continuation and command boundaries."""
+    quote, escaped, first, index, word_start = None, False, 0, 0, True
+    segments, unsupported = [], False
+    while index < len(line):
+        char = line[index]
+        if escaped:
+            escaped = False
+            word_start = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+            word_start = False
+        elif quote:
+            if quote == '"' and (char == "`" or line[index:index + 2] == "$("):
+                unsupported = True
+            if char == quote:
+                quote = None
+        elif char in {"'", '"'}:
+            quote = char
+            word_start = False
+        elif char == "#" and word_start:
+            line = line[:index]
+            break
+        elif char == "`" or line[index:index + 2] == "$(":
+            unsupported = True
+            word_start = False
+        elif line[index:index+2] in {">&", "<&"}:
+            unsupported = True
+            index += 2
+            word_start = True
+            continue
+        elif char in ";&|":
+            segments.append(line[first:index])
+            width = 2 if line[index:index + 2] in {"&&", "||"} else 1
+            index += width
+            first = index
+            word_start = True
+            continue
+        elif quote is None:
+            word_start = char.isspace() or char in "()<>"
+        index += 1
+    segments.append(line[first:])
+    return segments, escaped and quote != "'", quote, unsupported
+
+
+def _shell_segments(line):
+    segments, continuation, quote, unsupported = _shell_walk(line)
+    return [] if continuation or quote or unsupported else segments
+
+
+def scan_workflow_text(text, relative_path, *, yaml=False):
+    rows = []
+    for number, line in _workflow_lines(text, yaml):
+        token_count = 0
+        ordinal = 0
+        segments = _shell_segments(line)
+        if not segments and line.strip():
+            row = build_result(relative_path, "source", "docker-cli", "")
+            row.source_path, row.source_line = relative_path, number
+            row.source_coverage = "unresolved_syntax"
+            row.copyescape_evidence_confidence = "insufficient"
+            row.copyescape_evidence_type = "source_coverage"
+            row.copyescape_notes.append("Unsupported shell syntax at this logical line was not assessed; no command absence, direction or runtime trust is established.")
+            rows.append(row)
+            if len(rows)>MAX_INPUTS:
+                raise ValueError("Too many workflow observations")
+        for segment in segments:
+            lexer = shlex.shlex(segment, posix=True, punctuation_chars="()<>")
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            try:
+                command = list(lexer)
+            except ValueError:
+                continue
+            token_count += len(command)
+            if token_count > 20000:
+                raise ValueError("Workflow line exceeds the token limit")
+            offset, spelling = None, ""
+            if command[:2] == ["docker", "cp"]:
+                offset, spelling = 2, "docker cp"
+            elif command[:3] == ["docker", "container", "cp"]:
+                offset, spelling = 3, "docker container cp"
+            if offset is None:
+                continue
+            direction = _copy_direction(command[offset:])
+            row = build_result(relative_path, "source", "docker-cli", "")
+            row.source_path, row.source_line = relative_path, number
+            ordinal += 1
+            row.source_candidate = ordinal
+            row.source_spelling, row.source_direction = spelling, direction
+            row.source_coverage = "limited_lexical"
+            row.copyescape_evidence_type = "lexical_workflow_candidate"
+            row.copyescape_evidence_confidence = "insufficient"
+            row.copyescape_notes.append(
+                f"Workflow candidate {relative_path}:{number}: {spelling}; direction={direction}. "
+                "Static syntax does not prove attacker control, deployment, host permissions or a reachable extraction path. "
+                "Aliases, wrappers, interpolation, shell/YAML semantics and multiline quoting need manual review.")
+            rows.append(row)
+            if len(rows) > MAX_INPUTS:
+                raise ValueError("Too many workflow candidates")
+    if not rows:
+        row = build_result(relative_path, "source", "docker-cli", "")
+        row.source_path, row.source_coverage = relative_path, "limited_lexical"
+        row.copyescape_evidence_type = "source_coverage"
+        row.copyescape_evidence_confidence = "insufficient"
+        row.copyescape_notes.append("No supported direct docker cp candidate found; wrappers, aliases, dynamic commands and unsupported YAML/shell remain unknown. No absence or mitigation is established.")
+        rows.append(row)
+    return rows
+
+
+def load_source(path, root, sink):
+    relative = path.resolve().relative_to(root.resolve()).as_posix()
+    if len(relative) > MAX_FIELD:
+        raise ValueError("Source relative path exceeds the field limit")
+    data = _read_bounded(path, "Source").decode("utf-8-sig")
+    rows = scan_workflow_text(data, relative, yaml=path.suffix.lower() in {".yml", ".yaml"})
+    if len(sink) + len(rows) > MAX_INPUTS:
+        raise ValueError("Too many combined inputs")
+    sink.extend(rows)
+
+
+def load_docker_version(path, sink, ordinal=1):
+    """Read an existing docker version export. Never invoke Docker or a shell."""
+    text = _read_bounded(path, "Docker version export").decode("utf-8-sig")
+    candidates = {"docker-cli": [], "docker-engine": []}
+    if text.lstrip().startswith("{"):
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("Duplicate Docker metadata key")
+                result[key] = value
+            return result
+        def reject(_):
+            raise ValueError("Non-finite Docker metadata number")
+        data = json.loads(text, object_pairs_hook=unique, parse_constant=reject)
+        if not isinstance(data, dict):
+            raise ValueError("Docker version JSON must be an object")
+        for section, component in [("Client", "docker-cli"), ("Server", "docker-engine")]:
+            value = data.get(section)
+            if value is None:
+                continue
+            if not isinstance(value, dict):
+                raise ValueError("Docker Client/Server metadata must be an object or null")
+            if "Version" in value:
+                candidates[component].append(value["Version"])
+            if section == "Server" and "Components" in value:
+                if not isinstance(value["Components"], list) or len(value["Components"]) > 100:
+                    raise ValueError("Invalid Docker component list")
+                for item in value["Components"]:
+                    if not isinstance(item, dict):
+                        raise ValueError("Invalid Docker component metadata")
+                    if item.get("Name") == "Engine" and "Version" in item:
+                        candidates[component].append(item["Version"])
+    else:
+        section, subcomponent = None, None
+        for line in text.split("\n"):
+            line = line.removesuffix("\r")
+            match = re.match(r"^(Client|Server):", line)
+            if match:
+                section = "docker-cli" if match[1] == "Client" else "docker-engine"
+                subcomponent = None
+                continue
+            heading = re.match(r"^\s+([^:\s][^:]*):\s*$", line)
+            if heading and heading[1].strip() != "Version":
+                subcomponent = heading[1].strip()
+                continue
+            version = re.match(r"^[ \t]+Version:[ \t]*(.*?)[ \t]*$", line)
+            if version and section and (subcomponent is None or (section == "docker-engine" and subcomponent == "Engine")):
+                candidates[section].append(version[1])
+    if len(sink) + 2 > MAX_INPUTS:
+        raise ValueError("Too many combined inputs")
+    for component, versions in candidates.items():
+        if len(versions) > 128 or any(not isinstance(v, str) or len(v) > MAX_FIELD for v in versions):
+            raise ValueError("Docker versions must be bounded strings")
+        versions = sorted(set(versions))
+        row = build_result(component + " export", "docker_version_export", component, versions[0] if len(versions) == 1 else "")
+        if len(versions) > 1:
+            for key, value in assess_copyescape(component, versions[0], version_candidates=versions[1:]).items():
+                setattr(row, key, value)
+        if any(not version.strip() for version in versions):
+            row.copyescape_status = "unknown"
+            row.copyescape_version_status = "missing_or_conflicting_export_version"
+            row.copyescape_recommendation = COMPONENTS[component]["recommendation"]
+            row.copyescape_notes.append("An explicit blank version field is unresolved; another version cannot clear it.")
+        elif len(versions) > 1 and row.copyescape_status != "unknown":
+            # Equivalent supported spellings can agree after the assessor's
+            # single normalization. Give that non-conflicting row a version.
+            row.reported_version = versions[0].strip(" \t\r\n").removeprefix("v")
+        if not versions:
+            row.copyescape_notes.append("No supported component Version field was recognized; custom templates or unsupported text remain unknown, not clean.")
+        row.source_instance = hashlib.sha256(("docker-version-export:"+str(ordinal)).encode("ascii")).hexdigest()
+        row.copyescape_evidence_type = "docker_version_export"
+        row.copyescape_evidence_confidence = "insufficient" if row.copyescape_status == "unknown" else "low"
+        row.version_candidates = versions
+        if versions:
+            row.copyescape_notes.append("Export version candidates: " + ", ".join(version or "(blank)" for version in versions))
+        row.copyescape_notes.append("Existing Docker version export, not live runtime attestation. Client and server are independent; API versions, contexts, hosts, scripts and other component versions are not collected. Desktop version must be supplied independently.")
+        sink.append(row)
 
 
 def load_inventory(path: Path, sink: list) -> list:
@@ -608,7 +987,7 @@ exit status:
   2  operational error (bad usage, unreadable or invalid input, output refused or unwritable)
   130  interrupted; completed results were written (JSON/HTML mark the run incomplete)
 
-components: docker-engine, docker-desktop, go-archive. Docker Sandboxes has no verified rule.
+components: docker-engine, docker-cli (docker-client), docker-desktop, go-archive. Docker Sandboxes has no verified rule.
 This tool is offline: it makes no network requests and runs no Docker or application code.
 """
 
@@ -620,6 +999,9 @@ def main(argv=None) -> int:
     parser.add_argument("--build-source", default="unknown", help="Build provenance applied to --version values (default: unknown); vendor or custom keeps results unknown")
     parser.add_argument("--inventory", action="append", default=[], type=Path, metavar="FILE", help="Read JSON inventory (schema_version 1); repeatable")
     parser.add_argument("--csv", action="append", default=[], type=Path, metavar="FILE", dest="csv_lists", help="Read a CSV list with a component,version header; repeatable")
+    parser.add_argument("--docker-version", action="append", default=[], type=Path, metavar="FILE", help="Read an existing Docker version JSON/text export; never invokes Docker")
+    parser.add_argument("--source", action="append", default=[], type=Path, metavar="FILE", help="Explicit shell or CI YAML file for docker cp candidates; repeatable, never executed")
+    parser.add_argument("--source-root", type=Path, metavar="DIR", help="Required with --source; report relative file/line evidence")
     parser.add_argument("--format", choices=("csv", "json", "html"), default="csv", help="Output format (default: csv)")
     parser.add_argument("--output", type=Path, help="Save report to a new file; default: stdout")
     parser.add_argument("--force", action="store_true", help="Replace an existing output file explicitly")
@@ -636,15 +1018,25 @@ def main(argv=None) -> int:
             raise ValueError(f"A run is limited to {MAX_INPUTS:,} inputs")
 
     try:
-        if not (args.version or args.inventory or args.csv_lists):
-            parser.error("provide --version, --inventory, or --csv")
+        if not (args.version or args.inventory or args.csv_lists or args.source or args.docker_version):
+            parser.error("provide --version, --inventory, --csv, --docker-version or --source")
         if len(args.brand) > MAX_FIELD or any(ord(c) < 32 or ord(c) == 127 for c in args.brand):
             raise ValueError(f"--brand must be at most {MAX_FIELD} characters without control characters")
         if len(args.version) > MAX_INPUTS:
             raise ValueError(f"A run is limited to {MAX_INPUTS:,} inputs")
+        inputs = [*args.inventory, *args.csv_lists, *args.source, *args.docker_version]
+        if len(inputs) > 100:
+            raise ValueError("A run is limited to 100 input files")
+        if args.source and (args.source_root is None or not args.source_root.is_dir()):
+            raise ValueError("--source requires an existing --source-root directory")
+        for path in args.source:
+            if not stat.S_ISREG(path.stat().st_mode):
+                raise ValueError("Source must be a regular file")
+            if path.suffix.lower() not in {".sh", ".bash", ".yml", ".yaml"}:
+                raise ValueError("Source must be an explicit shell or CI YAML file")
+            path.resolve().relative_to(args.source_root.resolve())
         if args.output:  # Validate the destination before reading any input.
-            inputs = [*args.inventory, *args.csv_lists]
-            if any(args.output.resolve() == p.resolve() for p in inputs):
+            if any(args.output.resolve() == p.resolve() or (args.output.exists() and os.path.samefile(args.output, p)) for p in inputs):
                 raise ValueError("--output must differ from every input file, even with --force")
             if args.output.exists() and not args.force:
                 raise ValueError("Output exists; use a new path or explicitly pass --force")
@@ -657,6 +1049,10 @@ def main(argv=None) -> int:
                 load_inventory(path, rows)
             for path in args.csv_lists:
                 load_csv(path, rows)
+            for ordinal,path in enumerate(args.docker_version,1):
+                load_docker_version(path, rows, ordinal)
+            for path in args.source:
+                load_source(path, args.source_root, rows)
         except KeyboardInterrupt:
             complete = False
             print("Interrupted; preserving completed results.", file=sys.stderr)
